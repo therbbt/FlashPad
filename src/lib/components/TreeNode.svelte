@@ -194,6 +194,15 @@
     background: var(--panel-2);
   }
 
+  .row.selected {
+    background: var(--accent-soft);
+  }
+
+  .row.focused {
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+  }
+
   .chevron {
     flex-shrink: 0;
     color: var(--muted);

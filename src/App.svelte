@@ -186,6 +186,7 @@
     focusedKey = visibleFlat[0].key;
   }
   $: currentFolderName = selectedFolderId != null ? (folders.find((f) => f.id === selectedFolderId) ? folderPath(folders.find((f) => f.id === selectedFolderId)!) : 'Notes') : 'Notes';
+  $: searchMatchIndex = isSearching ? searchResults.findIndex((n) => n.id === selectedId) : -1;
 
   // ---------- data loading ----------
 
@@ -210,18 +211,32 @@
     return firstLine.length > 80 ? firstLine.slice(0, 80) : firstLine;
   };
 
-  const selectNote = (note: NoteRecord) => {
+  const selectNote = (note: NoteRecord, focusEditor = true) => {
     selectedId = note.id;
     selectedFolderId = note.folderId;
     title = note.title;
     noteText = note.content;
     titleAutoDerive = note.title === 'Untitled' || note.title.trim() === '';
-    requestAnimationFrame(() => textarea?.focus());
+    if (focusEditor) requestAnimationFrame(() => textarea?.focus());
   };
 
-  const openNote = async (id: number) => {
+  // focusEditor defaults to false here: opening a note from the sidebar (click,
+  // search nav) should keep keyboard focus in the tree/search box so arrow-key
+  // navigation keeps working. Pass true for deliberate "open to edit" actions
+  // (Enter, context menu "Open").
+  const openNote = async (id: number, focusEditor = false) => {
     const note = notes.find((n) => n.id === id);
-    if (note) selectNote(note);
+    if (note) selectNote(note, focusEditor);
+  };
+
+  const goToSearchMatch = (direction: 1 | -1) => {
+    if (!searchResults.length) return;
+    const nextIndex = searchMatchIndex === -1
+      ? 0
+      : (searchMatchIndex + direction + searchResults.length) % searchResults.length;
+    const match = searchResults[nextIndex];
+    focusedKey = `note:${match.id}`;
+    void openNote(match.id);
   };
 
   const saveActiveNote = async () => {
@@ -494,7 +509,7 @@
       x: event.clientX,
       y: event.clientY,
       items: [
-        { label: 'Open', action: () => void openNote(noteId) },
+        { label: 'Open', action: () => void openNote(noteId, true) },
         { label: 'Rename', action: () => (renamingKey = `note:${noteId}`) },
         { label: 'Duplicate', action: () => void duplicateNote(noteId) },
         { label: 'Move to folder', submenu: buildMoveTargetItems((target) => void moveNoteTo(noteId, target)) },
@@ -513,7 +528,10 @@
     onSelectNote: (id: number) => void openNote(id),
     onFolderContextMenu: openFolderMenu,
     onNoteContextMenu: openNoteMenu,
-    onFocusItem: (key: string) => (focusedKey = key),
+    onFocusItem: (key: string) => {
+      focusedKey = key;
+      treeEl?.focus();
+    },
     onRenameCommit: commitRename,
     onRenameCancel: () => (renamingKey = null),
   };
@@ -545,11 +563,15 @@
         toggleFolder(entry.item.id);
       }
     } else if (event.key === 'Enter') {
+      event.preventDefault();
+      if (isSearching) {
+        goToSearchMatch(event.shiftKey ? -1 : 1);
+        return;
+      }
       const entry = visibleFlat[currentIndex];
       if (entry) {
-        event.preventDefault();
         if (entry.item.type === 'note') {
-          void openNote(entry.item.id);
+          void openNote(entry.item.id, true);
         } else {
           toggleFolder(entry.item.id);
         }
@@ -751,7 +773,32 @@
     ></textarea>
 
     <footer class="footer">
-      <input class="search-input" bind:value={query} on:keydown={handleTreeKeydown} placeholder="Search notes" />
+      <div class="search-box">
+        <input class="search-input" bind:value={query} on:keydown={handleTreeKeydown} placeholder="Search notes" />
+        {#if isSearching}
+          <span class="search-count">{searchResults.length ? `${searchMatchIndex + 1}/${searchResults.length}` : '0/0'}</span>
+          <button
+            class="search-nav-btn"
+            on:click={() => goToSearchMatch(-1)}
+            disabled={!searchResults.length}
+            aria-label="Previous match"
+          >
+            <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2.5 6.5L5 3.5L7.5 6.5" />
+            </svg>
+          </button>
+          <button
+            class="search-nav-btn"
+            on:click={() => goToSearchMatch(1)}
+            disabled={!searchResults.length}
+            aria-label="Next match"
+          >
+            <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2.5 3.5L5 6.5L7.5 3.5" />
+            </svg>
+          </button>
+        {/if}
+      </div>
       <span class="status">{status}</span>
     </footer>
   </section>
@@ -776,6 +823,7 @@
     --muted: #4b5563;
     --border: rgba(17, 24, 39, 0.1);
     --accent: #2563eb;
+    --accent-soft: rgba(37, 99, 235, 0.14);
   }
 
   :global(html:not([data-theme='light'])) {
@@ -787,6 +835,7 @@
     --muted: #97958d;
     --border: rgba(255,255,255,0.08);
     --accent: #e0a458;
+    --accent-soft: rgba(224, 164, 88, 0.18);
   }
 
   :global(body.resizing-sidebar) {
@@ -934,7 +983,7 @@
     align-items: center;
     flex-shrink: 0;
     gap: 0.3rem;
-    height: 25px;
+    height: 30px;
     padding: 0 0.5rem;
     border-bottom: 1px solid var(--border);
     background: var(--panel);
@@ -950,7 +999,7 @@
     padding: 0 0.4rem;
     background: transparent;
     color: var(--muted);
-    font-size: 0.7rem;
+    font-size: 0.8rem;
     line-height: 1;
   }
 
@@ -990,6 +1039,13 @@
     color: var(--muted);
   }
 
+  .search-box {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-shrink: 0;
+  }
+
   .footer .search-input {
     width: 200px;
     flex-shrink: 0;
@@ -999,6 +1055,35 @@
     color: inherit;
     font-size: 0.8rem;
     padding: 0.35rem 0.6rem;
+  }
+
+  .search-count {
+    font-size: 0.75rem;
+    color: var(--muted);
+    min-width: 2.5rem;
+    text-align: center;
+  }
+
+  .search-nav-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+    background: var(--panel-2);
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .search-nav-btn:hover:not(:disabled) {
+    background: var(--panel-3, var(--panel-2));
+  }
+
+  .search-nav-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
 
   .footer span:last-child {
