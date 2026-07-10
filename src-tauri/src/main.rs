@@ -15,8 +15,14 @@ fn hide_window(window: tauri::Window) {
     let _ = window.hide();
 }
 
+#[command]
+fn minimize_window(window: tauri::Window) {
+    let _ = window.minimize();
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -28,6 +34,7 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             hide_window,
+            minimize_window,
             notes::list_notes,
             notes::create_note,
             notes::update_note,

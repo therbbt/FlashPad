@@ -8,6 +8,7 @@
   import { DatabaseService } from './lib/services/databaseService';
   import TreeNode, { type TreeItem } from './lib/components/TreeNode.svelte';
   import ContextMenu, { type ContextMenuItem } from './lib/components/ContextMenu.svelte';
+  import ShortcutsPanel from './lib/components/ShortcutsPanel.svelte';
 
   const notesService = new NotesService();
   const foldersService = new FoldersService();
@@ -16,6 +17,10 @@
   const databaseService = new DatabaseService();
 
   const EXPANDED_KEY = 'flashpad.expandedFolders';
+  const SIDEBAR_WIDTH_KEY = 'flashpad.sidebarWidth';
+  const SIDEBAR_MIN_WIDTH = 80;
+  const SIDEBAR_MAX_WIDTH = 480;
+  const DEFAULT_SIDEBAR_WIDTH = 260;
 
   let notes: NoteRecord[] = [];
   let folders: FolderRecord[] = [];
@@ -25,6 +30,10 @@
   let focusedKey: string | null = null;
   let renamingKey: string | null = null;
   let contextMenu: { x: number; y: number; items: ContextMenuItem[] } | null = null;
+  let shortcutsOpen = false;
+  let hotkeySetting = 'Alt+S';
+  let sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
+  let isResizingSidebar = false;
 
   let noteText = '';
   let title = 'Untitled';
@@ -34,6 +43,7 @@
   let theme: FlashPadSettings['theme'] = 'dark';
   let textarea: HTMLTextAreaElement;
   let treeEl: HTMLDivElement;
+  let noteActionsButton: HTMLButtonElement;
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
 
   // ---------- persistence helpers ----------
@@ -52,6 +62,40 @@
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(EXPANDED_KEY, JSON.stringify([...expandedFolders]));
     }
+  };
+
+  const loadSidebarWidth = (): number => {
+    if (typeof window === 'undefined') return DEFAULT_SIDEBAR_WIDTH;
+    const raw = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    if (!raw || Number.isNaN(raw)) return DEFAULT_SIDEBAR_WIDTH;
+    return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, raw));
+  };
+
+  const saveSidebarWidth = () => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
+    }
+  };
+
+  const startSidebarResize = (event: MouseEvent) => {
+    event.preventDefault();
+    isResizingSidebar = true;
+    document.body.classList.add('resizing-sidebar');
+
+    const handleMove = (moveEvent: MouseEvent) => {
+      sidebarWidth = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, moveEvent.clientX));
+    };
+
+    const handleUp = () => {
+      isResizingSidebar = false;
+      document.body.classList.remove('resizing-sidebar');
+      saveSidebarWidth();
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
   };
 
   // ---------- tree construction ----------
@@ -473,6 +517,21 @@
     void settingsService.saveTheme(theme);
   };
 
+  const openNoteActionsMenu = () => {
+    if (!noteActionsButton) return;
+    const rect = noteActionsButton.getBoundingClientRect();
+    contextMenu = {
+      x: rect.right - 170,
+      y: rect.bottom + 4,
+      items: [
+        { label: 'Insert timestamp', action: () => insertTimestamp() },
+        { label: 'Delete note', danger: true, action: () => {
+            if (selectedId != null) void deleteNoteById(selectedId);
+          } },
+      ],
+    };
+  };
+
   const handleKeydown = (event: KeyboardEvent) => {
     const isShortcut = (event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 't';
     if (isShortcut) {
@@ -481,19 +540,22 @@
     }
 
     if (event.key === 'Escape') {
+      if (contextMenu || shortcutsOpen) return;
       event.preventDefault();
-      void invoke('hide_window').catch(() => {
-        status = 'Window hidden';
+      void invoke('minimize_window').catch(() => {
+        status = 'Window minimized';
       });
     }
   };
 
   onMount(async () => {
     expandedFolders = loadExpanded();
+    sidebarWidth = loadSidebarWidth();
     try {
       await databaseService.init();
       const settings = await settingsService.load();
       theme = settings.theme;
+      hotkeySetting = settings.hotkey;
       document.documentElement.dataset.theme = theme;
       try {
         await Promise.race([
@@ -524,19 +586,10 @@
 </svelte:head>
 
 <div class="shell">
-  <aside class="sidebar">
+  <aside class="sidebar" style="width: {sidebarWidth}px">
     <div class="sidebar-top">
-      <div>
-        <h1>FlashPad</h1>
-        <p>Instant capture, local-first</p>
-      </div>
-      <button class="ghost" on:click={toggleTheme}>{theme === 'dark' ? '☀' : '☾'}</button>
+      <h1>FlashPad</h1>
     </div>
-
-    <label class="field">
-      <span>Search</span>
-      <input bind:value={query} on:keydown={handleTreeKeydown} placeholder="Search notes" />
-    </label>
 
     <div
       class="tree"
@@ -562,7 +615,34 @@
         {/if}
       {/if}
     </div>
+
+    <div class="sidebar-bottom">
+      <button class="theme-toggle" on:click={toggleTheme} aria-label="Toggle theme">
+        {#if theme === 'dark'}
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+            <circle cx="8" cy="8" r="3" />
+            <path
+              d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.2 3.2l1.1 1.1M11.7 11.7l1.1 1.1M12.8 3.2l-1.1 1.1M4.3 11.7l-1.1 1.1"
+            />
+          </svg>
+        {:else}
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M13.5 9.5A6 6 0 1 1 6.5 2.5a5 5 0 1 0 7 7Z" />
+          </svg>
+        {/if}
+      </button>
+      <button class="theme-toggle" on:click={() => (shortcutsOpen = true)} aria-label="Keyboard shortcuts">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+          <circle cx="8" cy="8" r="6.5" />
+          <path d="M6.1 6.2a1.9 1.9 0 1 1 2.7 1.7c-.7.35-.9.7-.9 1.4" stroke-linejoin="round" />
+          <circle cx="8" cy="11.4" r="0.15" fill="currentColor" />
+        </svg>
+      </button>
+    </div>
   </aside>
+
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="sidebar-resizer" class:active={isResizingSidebar} on:mousedown={startSidebarResize}></div>
 
   <section class="editor-pane">
     <header class="topbar">
@@ -571,8 +651,13 @@
         <span class="breadcrumb">{currentFolderName}</span>
       </div>
       <div class="toolbar">
-        <button class="ghost" on:click={insertTimestamp}>Timestamp</button>
-        <button class="danger" on:click={() => selectedId != null && deleteNoteById(selectedId)}>Delete</button>
+        <button class="icon-btn" bind:this={noteActionsButton} on:click={openNoteActionsMenu} aria-label="Note actions">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <circle cx="3" cy="8" r="1.4" />
+            <circle cx="8" cy="8" r="1.4" />
+            <circle cx="13" cy="8" r="1.4" />
+          </svg>
+        </button>
       </div>
     </header>
 
@@ -585,14 +670,18 @@
     ></textarea>
 
     <footer class="footer">
-      <span>{status}</span>
-      <span>Ctrl+Shift+T · Esc hides</span>
+      <input class="search-input" bind:value={query} on:keydown={handleTreeKeydown} placeholder="Search notes" />
+      <span>Ctrl+Shift+T · Esc minimizes</span>
     </footer>
   </section>
 </div>
 
 {#if contextMenu}
   <ContextMenu x={contextMenu.x} y={contextMenu.y} items={contextMenu.items} onClose={closeContextMenu} />
+{/if}
+
+{#if shortcutsOpen}
+  <ShortcutsPanel hotkey={hotkeySetting} onClose={() => (shortcutsOpen = false)} />
 {/if}
 
 <style>
@@ -618,6 +707,11 @@
     --accent: #60a5fa;
   }
 
+  :global(body.resizing-sidebar) {
+    cursor: col-resize;
+    user-select: none;
+  }
+
   .shell {
     display: flex;
     height: 100%;
@@ -626,9 +720,8 @@
   }
 
   .sidebar {
-    width: 260px;
+    flex-shrink: 0;
     padding: 0.75rem;
-    border-right: 1px solid var(--border);
     background: var(--panel);
     display: flex;
     flex-direction: column;
@@ -636,9 +729,24 @@
     min-height: 0;
   }
 
+  .sidebar-resizer {
+    flex-shrink: 0;
+    width: 5px;
+    margin-left: -2px;
+    margin-right: -2px;
+    z-index: 10;
+    cursor: col-resize;
+    background: transparent;
+    border-right: 1px solid var(--border);
+  }
+
+  .sidebar-resizer:hover,
+  .sidebar-resizer.active {
+    border-right: 2px solid var(--accent);
+  }
+
   .sidebar-top {
     display: flex;
-    justify-content: space-between;
     align-items: center;
   }
 
@@ -647,10 +755,28 @@
     font-size: 1rem;
   }
 
-  .sidebar p {
-    margin: 0.2rem 0 0;
+  .sidebar-bottom {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 0.4rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .theme-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    background: var(--panel-2);
     color: var(--muted);
-    font-size: 0.8rem;
+    padding: 0;
+  }
+
+  .theme-toggle:hover {
+    color: var(--text);
   }
 
   .tree {
@@ -712,34 +838,21 @@
     gap: 0.5rem;
   }
 
-  .field {
+  .icon-btn {
     display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-    color: var(--muted);
-    font-size: 0.75rem;
-  }
-
-  .field input {
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
     border: 1px solid var(--border);
     border-radius: 0.5rem;
     background: var(--panel-2);
-    color: inherit;
-    padding: 0.45rem 0.6rem;
+    color: var(--muted);
+    padding: 0;
   }
 
-  .ghost,
-  .danger {
-    border: 1px solid var(--border);
-    border-radius: 0.6rem;
-    padding: 0.5rem 0.65rem;
-    background: var(--panel-2);
-    color: inherit;
-  }
-
-  .danger {
-    background: rgba(220, 38, 38, 0.12);
-    color: #ef4444;
+  .icon-btn:hover {
+    color: var(--text);
   }
 
   .editor {
@@ -756,10 +869,26 @@
 
   .footer {
     display: flex;
-    justify-content: space-between;
-    padding: 0.6rem 0.9rem;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.9rem;
     border-top: 1px solid var(--border);
     font-size: 0.8rem;
     color: var(--muted);
+  }
+
+  .footer .search-input {
+    width: 200px;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    background: var(--panel-2);
+    color: inherit;
+    font-size: 0.8rem;
+    padding: 0.35rem 0.6rem;
+  }
+
+  .footer span:last-child {
+    margin-left: auto;
   }
 </style>

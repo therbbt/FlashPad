@@ -14,7 +14,7 @@ export class SettingsService {
     const stored = typeof window !== 'undefined' ? window.localStorage.getItem(STORAGE_KEY) : null;
     const parsed = stored ? (JSON.parse(stored) as Partial<FlashPadSettings>) : {};
     this.cached = {
-      hotkey: parsed.hotkey ?? 'Ctrl+Alt+N',
+      hotkey: parsed.hotkey ?? 'Alt+S',
       timestampFormat: parsed.timestampFormat ?? 'classic',
       theme: parsed.theme ?? 'dark',
     };
@@ -22,7 +22,7 @@ export class SettingsService {
   }
 
   getCached(): FlashPadSettings {
-    return this.cached ?? { hotkey: 'Ctrl+Alt+N', timestampFormat: 'classic', theme: 'dark' };
+    return this.cached ?? { hotkey: 'Alt+S', timestampFormat: 'classic', theme: 'dark' };
   }
 
   async save(settings: Partial<FlashPadSettings>): Promise<void> {

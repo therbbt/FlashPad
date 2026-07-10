@@ -14,6 +14,7 @@ export class HotkeyService {
     await register(hotkey, (event) => {
       if (event.state !== 'Pressed') return;
       const win = getCurrentWindow();
+      void win.unminimize();
       void win.show();
       void win.setFocus();
     });

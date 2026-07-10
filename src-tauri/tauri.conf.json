@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.flashpad.app",
   "build": {
-    "beforeDevCommand": "export PATH=\"$PWD/.local/node/bin:$PATH\" && npm install && npm run dev",
-    "beforeBuildCommand": "export PATH=\"$PWD/.local/node/bin:$PATH\" && npm install && npm run build",
+    "beforeDevCommand": "npm install && npm run dev",
+    "beforeBuildCommand": "npm install && npm run build",
     "devUrl": "http://127.0.0.1:5173",
     "frontendDist": "../dist"
   },
