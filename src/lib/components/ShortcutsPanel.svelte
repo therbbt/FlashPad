@@ -7,7 +7,7 @@
   let panelEl: HTMLDivElement;
 
   const shortcuts: [string, string][] = [
-    ['Esc', 'Minimize the window'],
+    ['Esc', 'Hide the window (still running in the tray)'],
     ['Ctrl+Shift+T', 'Insert a timestamp separator'],
     ['Enter', 'Open the focused note, or expand/collapse a folder'],
     ['↑ / ↓', 'Move through the tree or search results'],

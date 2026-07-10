@@ -542,8 +542,8 @@
     if (event.key === 'Escape') {
       if (contextMenu || shortcutsOpen) return;
       event.preventDefault();
-      void invoke('minimize_window').catch(() => {
-        status = 'Window minimized';
+      void invoke('hide_window').catch(() => {
+        status = 'Window hidden';
       });
     }
   };
@@ -671,7 +671,7 @@
 
     <footer class="footer">
       <input class="search-input" bind:value={query} on:keydown={handleTreeKeydown} placeholder="Search notes" />
-      <span>Ctrl+Shift+T · Esc minimizes</span>
+      <span>Ctrl+Shift+T · Esc hides</span>
     </footer>
   </section>
 </div>
