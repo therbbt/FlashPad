@@ -55,7 +55,7 @@
       onFocusItem(key);
       onToggleFolder(item.id);
     }}
-    on:contextmenu|preventDefault={(e) => {
+    on:contextmenu|preventDefault|stopPropagation={(e) => {
       onFocusItem(key);
       onFolderContextMenu(e, item.id);
     }}
@@ -131,7 +131,7 @@
       onFocusItem(key);
       onSelectNote(item.id);
     }}
-    on:contextmenu|preventDefault={(e) => {
+    on:contextmenu|preventDefault|stopPropagation={(e) => {
       onFocusItem(key);
       onNoteContextMenu(e, item.id);
     }}
@@ -206,15 +206,15 @@
 
   .icon {
     flex-shrink: 0;
-    opacity: 0.85;
   }
 
   .folder-icon {
-    color: var(--accent);
+    color: #e8a33d;
   }
 
   .note-icon {
     color: var(--muted);
+    opacity: 0.85;
   }
 
   .label {

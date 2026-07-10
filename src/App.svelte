@@ -43,7 +43,8 @@
   let theme: FlashPadSettings['theme'] = 'dark';
   let textarea: HTMLTextAreaElement;
   let treeEl: HTMLDivElement;
-  let noteActionsButton: HTMLButtonElement;
+  let insertButton: HTMLButtonElement;
+  let notesButton: HTMLButtonElement;
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
 
   // ---------- persistence helpers ----------
@@ -250,18 +251,38 @@
     scheduleSave();
   };
 
-  const insertTimestamp = () => {
-    const settings = settingsService.getCached();
-    const stamp = settingsService.renderTimestamp(settings.timestampFormat);
+  const insertAtCursor = (text: string) => {
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
-    noteText = `${noteText.slice(0, start)}${stamp}${noteText.slice(end)}`;
+    noteText = `${noteText.slice(0, start)}${text}${noteText.slice(end)}`;
     requestAnimationFrame(() => {
-      const cursor = start + stamp.length;
+      const cursor = start + text.length;
       textarea.focus();
       textarea.setSelectionRange(cursor, cursor);
     });
     handleEditorInput();
+  };
+
+  const insertNewline = () => insertAtCursor('-=-=-=-=-=-=-=-=-= =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-\n');
+
+  const formatLocalTimestamp = (date: Date): string => {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const y = date.getFullYear();
+    const mo = pad(date.getMonth() + 1);
+    const d = pad(date.getDate());
+    const h = pad(date.getHours());
+    const mi = pad(date.getMinutes());
+    const s = pad(date.getSeconds());
+    return `${y}-${mo}-${d} ${h}:${mi}:${s}`;
+  };
+
+  const insertTimestamp = () => {
+    insertAtCursor(`${formatLocalTimestamp(new Date())}\n`);
+  };
+
+  const insertDateline = () => {
+    const stamp = formatLocalTimestamp(new Date());
+    insertAtCursor(`=-=-=-=-=-=-=-=-=-   ${stamp}   -=-=-=-=-=-=-=-=-=\n`);
   };
 
   // ---------- creation ----------
@@ -276,6 +297,31 @@
     selectNote(created);
     focusedKey = `note:${created.id}`;
     status = 'New note';
+  };
+
+  // Only used once, when the database is empty (first launch / fresh
+  // install) - gives a new user something to look at instead of a blank
+  // untitled note, and doubles as a quick reference for the core shortcuts.
+  const createWelcomeNote = async () => {
+    const content = [
+      'Welcome to FlashPad',
+      '',
+      `Press ${hotkeySetting} anywhere to open FlashPad instantly.`,
+      "Press Esc to hide it - it keeps running in the tray.",
+      '',
+      'Right-click the sidebar to create notes and folders.',
+      '',
+      'Alt+1  Insert a divider',
+      'Alt+2  Insert a timestamp',
+      'Alt+3  Insert a dateline',
+      '',
+      'Start typing to replace this note.',
+    ].join('\n');
+
+    const created = await notesService.create({ title: 'Welcome to FlashPad', content, folderId: null });
+    notes = [created, ...notes];
+    selectNote(created);
+    focusedKey = `note:${created.id}`;
   };
 
   const createFolderIn = async (parentId: number | null) => {
@@ -517,15 +563,31 @@
     void settingsService.saveTheme(theme);
   };
 
-  const openNoteActionsMenu = () => {
-    if (!noteActionsButton) return;
-    const rect = noteActionsButton.getBoundingClientRect();
+  const openInsertMenu = () => {
+    if (!insertButton) return;
+    const rect = insertButton.getBoundingClientRect();
     contextMenu = {
-      x: rect.right - 170,
+      x: rect.left,
       y: rect.bottom + 4,
       items: [
-        { label: 'Insert timestamp', action: () => insertTimestamp() },
-        { label: 'Delete note', danger: true, action: () => {
+        { label: 'Newline', action: () => insertNewline() },
+        { label: 'Timestamp', action: () => insertTimestamp() },
+        { label: 'Dateline', action: () => insertDateline() },
+      ],
+    };
+  };
+
+  const openNotesMenu = () => {
+    if (!notesButton) return;
+    const rect = notesButton.getBoundingClientRect();
+    contextMenu = {
+      x: rect.left,
+      y: rect.bottom + 4,
+      items: [
+        { label: 'New note', action: () => void createNoteIn(selectedFolderId) },
+        { label: 'New folder', action: () => void createFolderIn(selectedFolderId) },
+        { label: '', separator: true },
+        { label: 'Delete', danger: true, action: () => {
             if (selectedId != null) void deleteNoteById(selectedId);
           } },
       ],
@@ -533,10 +595,19 @@
   };
 
   const handleKeydown = (event: KeyboardEvent) => {
-    const isShortcut = (event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 't';
-    if (isShortcut) {
+    if (event.altKey && event.key === '1') {
+      event.preventDefault();
+      insertNewline();
+    }
+
+    if (event.altKey && event.key === '2') {
       event.preventDefault();
       insertTimestamp();
+    }
+
+    if (event.altKey && event.key === '3') {
+      event.preventDefault();
+      insertDateline();
     }
 
     if (event.key === 'Escape') {
@@ -557,19 +628,12 @@
       theme = settings.theme;
       hotkeySetting = settings.hotkey;
       document.documentElement.dataset.theme = theme;
-      try {
-        await Promise.race([
-          hotkeyService.register(settings.hotkey),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('hotkey register timed out')), 3000)),
-        ]);
-      } catch (err) {
-        console.error('Failed to register global hotkey', err);
-      }
+      await hotkeyService.register(settings.hotkey);
       await refreshAll();
       if (notes.length) {
         selectNote(notes[0]);
       } else {
-        await createNoteIn(null);
+        await createWelcomeNote();
       }
       requestAnimationFrame(() => textarea?.focus());
     } catch (err) {
@@ -585,7 +649,39 @@
   <title>FlashPad</title>
 </svelte:head>
 
-<div class="shell">
+<div class="app-shell">
+  <div class="action-toolbar">
+    <button class="toolbar-btn" bind:this={notesButton} on:click={openNotesMenu} aria-label="Notes">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 1.5h5.17a1 1 0 0 1 .7.3l2.83 2.83a1 1 0 0 1 .3.7V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.5a1 1 0 0 1 1-1Z" />
+      </svg>
+      <span>Notes</span>
+      <svg class="caret" width="7" height="7" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2.5 3.5L5 6.5L7.5 3.5" />
+      </svg>
+    </button>
+
+    <button class="toolbar-btn" bind:this={insertButton} on:click={openInsertMenu} aria-label="Insert">
+      <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <path d="M8 3v10M3 8h10" />
+      </svg>
+      <span>Insert</span>
+      <svg class="caret" width="7" height="7" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2.5 3.5L5 6.5L7.5 3.5" />
+      </svg>
+    </button>
+
+    <button class="toolbar-btn shortcuts-btn" on:click={() => (shortcutsOpen = true)} aria-label="Keyboard shortcuts">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+        <circle cx="8" cy="8" r="6.5" />
+        <path d="M6.1 6.2a1.9 1.9 0 1 1 2.7 1.7c-.7.35-.9.7-.9 1.4" stroke-linejoin="round" />
+        <circle cx="8" cy="11.4" r="0.15" fill="currentColor" />
+      </svg>
+      <span>Shortcuts</span>
+    </button>
+  </div>
+
+  <div class="shell">
   <aside class="sidebar" style="width: {sidebarWidth}px">
     <div class="sidebar-top">
       <h1>FlashPad</h1>
@@ -597,7 +693,7 @@
       tabindex="0"
       role="tree"
       on:keydown={handleTreeKeydown}
-      on:contextmenu|preventDefault|self={openBackgroundMenu}
+      on:contextmenu|preventDefault={openBackgroundMenu}
     >
       {#if isSearching}
         {#each searchResults as note (note.id)}
@@ -613,6 +709,7 @@
         {#if !tree.length}
           <p class="empty-hint">Right-click to create a folder or note</p>
         {/if}
+        <div class="tree-spacer"></div>
       {/if}
     </div>
 
@@ -631,13 +728,6 @@
           </svg>
         {/if}
       </button>
-      <button class="theme-toggle" on:click={() => (shortcutsOpen = true)} aria-label="Keyboard shortcuts">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
-          <circle cx="8" cy="8" r="6.5" />
-          <path d="M6.1 6.2a1.9 1.9 0 1 1 2.7 1.7c-.7.35-.9.7-.9 1.4" stroke-linejoin="round" />
-          <circle cx="8" cy="11.4" r="0.15" fill="currentColor" />
-        </svg>
-      </button>
     </div>
   </aside>
 
@@ -649,15 +739,6 @@
       <div class="title-block">
         <input bind:value={title} class="title" placeholder="Untitled" on:input={handleTitleInput} />
         <span class="breadcrumb">{currentFolderName}</span>
-      </div>
-      <div class="toolbar">
-        <button class="icon-btn" bind:this={noteActionsButton} on:click={openNoteActionsMenu} aria-label="Note actions">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <circle cx="3" cy="8" r="1.4" />
-            <circle cx="8" cy="8" r="1.4" />
-            <circle cx="13" cy="8" r="1.4" />
-          </svg>
-        </button>
       </div>
     </header>
 
@@ -671,9 +752,10 @@
 
     <footer class="footer">
       <input class="search-input" bind:value={query} on:keydown={handleTreeKeydown} placeholder="Search notes" />
-      <span>Ctrl+Shift+T · Esc hides</span>
+      <span class="status">{status}</span>
     </footer>
   </section>
+  </div>
 </div>
 
 {#if contextMenu}
@@ -698,13 +780,13 @@
 
   :global(html:not([data-theme='light'])) {
     color-scheme: dark;
-    --bg: #0f1115;
-    --panel: #151923;
-    --panel-2: #1b2130;
-    --text: #f3f6fb;
-    --muted: #98a2b3;
+    --bg: #16161a;
+    --panel: #1e1e22;
+    --panel-2: #28282d;
+    --text: #ecebe7;
+    --muted: #97958d;
     --border: rgba(255,255,255,0.08);
-    --accent: #60a5fa;
+    --accent: #e0a458;
   }
 
   :global(body.resizing-sidebar) {
@@ -712,11 +794,18 @@
     user-select: none;
   }
 
-  .shell {
+  .app-shell {
     display: flex;
+    flex-direction: column;
     height: 100%;
     background: var(--bg);
     color: var(--text);
+  }
+
+  .shell {
+    display: flex;
+    flex: 1;
+    min-height: 0;
   }
 
   .sidebar {
@@ -740,7 +829,10 @@
     border-right: 1px solid var(--border);
   }
 
-  .sidebar-resizer:hover,
+  .sidebar-resizer:hover {
+    border-right: 1px solid var(--muted);
+  }
+
   .sidebar-resizer.active {
     border-right: 2px solid var(--accent);
   }
@@ -796,6 +888,11 @@
     margin: 0;
   }
 
+  .tree-spacer {
+    flex: 1;
+    min-height: 24px;
+  }
+
   .editor-pane {
     flex: 1;
     display: flex;
@@ -832,27 +929,43 @@
     font-size: 0.7rem;
   }
 
-  .toolbar {
+  .action-toolbar {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    flex-shrink: 0;
+    gap: 0.3rem;
+    height: 25px;
+    padding: 0 0.5rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
   }
 
-  .icon-btn {
+  .toolbar-btn {
     display: flex;
     align-items: center;
-    justify-content: center;
-    width: 1.75rem;
-    height: 1.75rem;
-    border: 1px solid var(--border);
-    border-radius: 0.5rem;
-    background: var(--panel-2);
+    gap: 0.25rem;
+    height: 22px;
+    border: 0;
+    border-radius: 0.3rem;
+    padding: 0 0.4rem;
+    background: transparent;
     color: var(--muted);
-    padding: 0;
+    font-size: 0.7rem;
+    line-height: 1;
   }
 
-  .icon-btn:hover {
+  .toolbar-btn:hover {
+    background: var(--panel-2);
     color: var(--text);
+  }
+
+
+  .toolbar-btn .caret {
+    opacity: 0.7;
+  }
+
+  .toolbar-btn.shortcuts-btn {
+    margin-left: auto;
   }
 
   .editor {

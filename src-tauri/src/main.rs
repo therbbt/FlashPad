@@ -9,6 +9,12 @@ use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{command, Manager, WindowEvent};
+use tauri_plugin_global_shortcut::ShortcutState;
+
+/// Global hotkey default. Kept in sync manually with DEFAULT_HOTKEY in
+/// src/lib/services/settingsService.ts until a settings UI exists to change
+/// it at runtime (which would need a Rust command to unregister/re-register).
+const GLOBAL_HOTKEY: &str = "Alt+S";
 
 #[command]
 fn hide_window(window: tauri::Window) {
@@ -22,10 +28,38 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// Runs entirely in Rust so the hotkey works instantly even while the
+/// webview is hidden - routing this through JS would require waking up a
+/// potentially-suspended WebKitGTK process for what should be an instant
+/// toggle, which was the cause of several-second delays after showing the
+/// window via the hotkey.
+fn toggle_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let visible = window.is_visible().unwrap_or(false);
+        let focused = window.is_focused().unwrap_or(false);
+        if visible && focused {
+            let _ = window.hide();
+        } else {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_shortcut(GLOBAL_HOTKEY)
+                .expect("invalid global hotkey definition")
+                .with_handler(|app, _shortcut, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        toggle_main_window(app);
+                    }
+                })
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             hide_window,
             notes::list_notes,

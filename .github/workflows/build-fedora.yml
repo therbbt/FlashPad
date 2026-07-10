@@ -1,0 +1,48 @@
+name: Build Fedora Linux package
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build-fedora:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+    steps:
+      # GitHub doesn't offer a hosted Fedora runner, so this job runs inside
+      # an actual Fedora container instead - same dnf package names/versions
+      # a real Fedora user's machine would have, rather than approximating
+      # them from Ubuntu. The container starts bare, so install even git
+      # before checkout can run.
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            git gcc gcc-c++ make pkgconf-pkg-config \
+            glib2-devel gtk3-devel webkit2gtk4.1-devel javascriptcoregtk4.1-devel \
+            librsvg2-devel libappindicator-gtk3-devel \
+            rpm-build file curl
+
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build FlashPad
+        run: npm run tauri build
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlashPad-fedora
+          path: |
+            src-tauri/target/release/bundle/rpm/*.rpm
+            src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error

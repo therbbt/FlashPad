@@ -8,11 +8,14 @@
 
   const shortcuts: [string, string][] = [
     ['Esc', 'Hide the window (still running in the tray)'],
-    ['Ctrl+Shift+T', 'Insert a timestamp separator'],
+    ['Alt+1', 'Insert a divider line'],
+    ['Alt+2', 'Insert a timestamp'],
+    ['Alt+3', 'Insert a dateline'],
     ['Enter', 'Open the focused note, or expand/collapse a folder'],
     ['↑ / ↓', 'Move through the tree or search results'],
     ['← / →', 'Collapse / expand the focused folder'],
     ['Right-click', 'Open the context menu (new, rename, move, delete, duplicate)'],
+    ['Enter / Esc', 'While renaming: confirm / cancel'],
   ];
 
   const handleKeydown = (event: KeyboardEvent) => {
@@ -30,7 +33,9 @@
 
   onMount(() => {
     window.addEventListener('mousedown', handleOutsideClick, true);
-    return () => window.removeEventListener('mousedown', handleOutsideClick, true);
+    return () => {
+      window.removeEventListener('mousedown', handleOutsideClick, true);
+    };
   });
 </script>
 

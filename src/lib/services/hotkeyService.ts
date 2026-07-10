@@ -1,29 +1,12 @@
-import { register, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
-import { getCurrentWindow } from '@tauri-apps/api/window';
-
-const isTauriRuntime = () =>
-  typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
-
+// The global hotkey is registered natively in Rust at startup (see
+// GLOBAL_HOTKEY in src-tauri/src/main.rs) so it works instantly even while
+// the window is hidden - routing it through the JS plugin API would require
+// waking up a potentially-suspended webview for what should be an instant
+// toggle. This class is a placeholder for when a settings UI exists to let
+// a user change the hotkey at runtime, which would call a Rust command to
+// re-register it rather than doing the toggle logic here.
 export class HotkeyService {
-  private current: string | null = null;
-
-  async register(hotkey: string): Promise<void> {
-    if (!isTauriRuntime() || this.current === hotkey) return;
-
-    await unregisterAll();
-    await register(hotkey, (event) => {
-      if (event.state !== 'Pressed') return;
-      const win = getCurrentWindow();
-      void (async () => {
-        const [visible, focused] = await Promise.all([win.isVisible(), win.isFocused()]);
-        if (visible && focused) {
-          await win.hide();
-        } else {
-          await win.show();
-          await win.setFocus();
-        }
-      })();
-    });
-    this.current = hotkey;
+  async register(_hotkey: string): Promise<void> {
+    return;
   }
 }

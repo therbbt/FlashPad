@@ -1,18 +1,17 @@
 export interface FlashPadSettings {
   hotkey: string;
-  timestampFormat: 'classic' | 'markdown' | 'simple';
   theme: 'dark' | 'light';
 }
 
 const STORAGE_KEY = 'flashpad.settings';
 
 // There's no settings UI yet to let a user actually choose this, so it isn't
-// read from or written to persisted storage below - only theme/timestampFormat
-// are. Once a real hotkey picker exists, persist it through an explicit save
-// action instead of letting it ride along with unrelated setting changes;
-// otherwise whatever this constant happened to be at the time of someone's
-// last save (e.g. toggling theme) gets baked in forever and silently
-// overrides every future change to this default.
+// read from or written to persisted storage below - only theme is. Once a
+// real hotkey picker exists, persist it through an explicit save action
+// instead of letting it ride along with unrelated setting changes; otherwise
+// whatever this constant happened to be at the time of someone's last save
+// (e.g. toggling theme) gets baked in forever and silently overrides every
+// future change to this default.
 const DEFAULT_HOTKEY = 'Alt+S';
 
 export class SettingsService {
@@ -24,14 +23,13 @@ export class SettingsService {
     const parsed = stored ? (JSON.parse(stored) as Partial<FlashPadSettings>) : {};
     this.cached = {
       hotkey: DEFAULT_HOTKEY,
-      timestampFormat: parsed.timestampFormat ?? 'classic',
       theme: parsed.theme ?? 'dark',
     };
     return this.cached;
   }
 
   getCached(): FlashPadSettings {
-    return this.cached ?? { hotkey: DEFAULT_HOTKEY, timestampFormat: 'classic', theme: 'dark' };
+    return this.cached ?? { hotkey: DEFAULT_HOTKEY, theme: 'dark' };
   }
 
   async save(settings: Partial<FlashPadSettings>): Promise<void> {
@@ -44,18 +42,5 @@ export class SettingsService {
 
   async saveTheme(theme: FlashPadSettings['theme']): Promise<void> {
     await this.save({ theme });
-  }
-
-  renderTimestamp(format: FlashPadSettings['timestampFormat']): string {
-    const stamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
-    switch (format) {
-      case 'markdown':
-        return `## ${stamp}\n`;
-      case 'simple':
-        return `${stamp}\n`;
-      case 'classic':
-      default:
-        return `--------------------------------------------------\n${stamp}\n--------------------------------------------------\n`;
-    }
   }
 }

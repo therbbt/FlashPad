@@ -1,8 +1,6 @@
 :root {
   color-scheme: dark;
   font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: #0f1115;
-  color: #f5f7fb;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -11,6 +9,9 @@
 
 * { box-sizing: border-box; }
 html, body, #app { margin: 0; width: 100%; height: 100%; overflow: hidden; }
-body { background: #0f1115; }
+/* Theme-aware, not hardcoded: --bg/--text are set by App.svelte's global
+   html[data-theme] rules. Anything rendered outside .shell (context menus,
+   modals) relies on these inheriting correctly from the true document root. */
+body { background: var(--bg, #0f1115); color: var(--text, #f5f7fb); }
 textarea, input, button { font: inherit; }
 button { cursor: pointer; }
