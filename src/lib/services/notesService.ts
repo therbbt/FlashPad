@@ -7,6 +7,7 @@ export interface NoteRecord {
   parentId: number | null;
   createdAt: string;
   updatedAt: string;
+  isMarkdown: boolean;
 }
 
 const STORAGE_KEY = 'flashpad.notes';
@@ -33,7 +34,7 @@ export class NotesService {
     return await invoke<NoteRecord[]>('list_notes');
   }
 
-  async create(payload: { title?: string; content?: string; parentId?: number | null } = {}): Promise<NoteRecord> {
+  async create(payload: { title?: string; content?: string; parentId?: number | null; isMarkdown?: boolean } = {}): Promise<NoteRecord> {
     if (!isTauriRuntime()) {
       const note: NoteRecord = {
         id: Date.now(),
@@ -42,17 +43,18 @@ export class NotesService {
         parentId: payload.parentId ?? null,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
+        isMarkdown: payload.isMarkdown ?? false,
       };
       const notes = [...readFallback(), note];
       writeFallback(notes);
       return note;
     }
     return await invoke<NoteRecord>('create_note', {
-      note: { title: payload.title, content: payload.content, parentId: payload.parentId ?? null },
+      note: { title: payload.title, content: payload.content, parentId: payload.parentId ?? null, isMarkdown: payload.isMarkdown ?? false },
     });
   }
 
-  async save(note: { id: number; title?: string; content?: string }): Promise<NoteRecord> {
+  async save(note: { id: number; title?: string; content?: string; isMarkdown?: boolean }): Promise<NoteRecord> {
     if (!isTauriRuntime()) {
       const notes = readFallback().map((item) => (item.id === note.id ? { ...item, ...note, updatedAt: new Date().toISOString() } : item));
       writeFallback(notes);

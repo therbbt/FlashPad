@@ -23,13 +23,15 @@ pub fn init(db_path: PathBuf) -> Connection {
             content TEXT NOT NULL DEFAULT '',
             folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            is_markdown INTEGER NOT NULL DEFAULT 0
         );",
     )
     .expect("failed to create schema");
 
     migrate_legacy_folder_column(&conn);
     migrate_folders_into_notes(&conn);
+    migrate_add_markdown_column(&conn);
 
     conn.execute_batch("PRAGMA foreign_keys = ON;")
         .expect("failed to enable foreign keys");
@@ -177,6 +179,16 @@ fn migrate_folders_into_notes(conn: &Connection) {
         .expect("failed to drop folders table");
 }
 
+/// Adds the per-note markdown toggle to existing databases created before it
+/// existed. Fresh installs already get the column via CREATE TABLE above.
+fn migrate_add_markdown_column(conn: &Connection) {
+    if column_exists(conn, "is_markdown") {
+        return;
+    }
+    conn.execute_batch("ALTER TABLE notes ADD COLUMN is_markdown INTEGER NOT NULL DEFAULT 0;")
+        .expect("failed to add is_markdown column");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,8 +266,39 @@ mod tests {
         assert!(!column_exists(&conn, "folder_id"));
         assert!(!column_exists(&conn, "folder"));
         assert!(!table_exists(&conn, "folders"));
+        assert!(column_exists(&conn, "is_markdown"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_add_markdown_column_adds_it_to_existing_databases() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL DEFAULT 'Untitled',
+                content TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                parent_id INTEGER REFERENCES notes(id) ON DELETE CASCADE
+            );
+            INSERT INTO notes (title, content, created_at, updated_at, parent_id)
+            VALUES ('Existing note', '', '2026-01-01T00:00:00', '2026-01-01T00:00:00', NULL);",
+        )
+        .unwrap();
+
+        assert!(!column_exists(&conn, "is_markdown"));
+        migrate_add_markdown_column(&conn);
+        assert!(column_exists(&conn, "is_markdown"));
+
+        let is_markdown: bool = conn
+            .query_row("SELECT is_markdown FROM notes WHERE title = 'Existing note'", [], |r| r.get(0))
+            .unwrap();
+        assert!(!is_markdown, "existing notes should default to plain text");
+
+        // Safe to rerun.
+        migrate_add_markdown_column(&conn);
     }
 
     #[test]

@@ -9,6 +9,8 @@
   import ContextMenu, { type ContextMenuItem } from './lib/components/ContextMenu.svelte';
   import ShortcutsPanel from './lib/components/ShortcutsPanel.svelte';
   import SettingsPanel from './lib/components/SettingsPanel.svelte';
+  import MarkdownEditor from './lib/components/MarkdownEditor.svelte';
+  import MarkdownHelpPanel from './lib/components/MarkdownHelpPanel.svelte';
 
   const notesService = new NotesService();
   const settingsService = new SettingsService();
@@ -30,6 +32,7 @@
   let contextMenu: { x: number; y: number; items: ContextMenuItem[] } | null = null;
   let shortcutsOpen = false;
   let settingsOpen = false;
+  let markdownHelpOpen = false;
   let hotkeySetting = 'Alt+S';
   let sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
   let isResizingSidebar = false;
@@ -40,7 +43,9 @@
   let query = '';
   let status = 'Ready';
   let theme: FlashPadSettings['theme'] = 'dark';
+  let isMarkdownActive = false;
   let textarea: HTMLTextAreaElement;
+  let markdownEditorRef: MarkdownEditor | undefined;
   let treeEl: HTMLDivElement;
   let insertButton: HTMLButtonElement;
   let notesButton: HTMLButtonElement;
@@ -102,7 +107,7 @@
 
   const buildTree = (noteList: NoteRecord[]): TreeItem[] => {
     const nodeById = new Map<number, TreeItem>();
-    noteList.forEach((n) => nodeById.set(n.id, { id: n.id, title: n.title, children: [] }));
+    noteList.forEach((n) => nodeById.set(n.id, { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown }));
 
     const roots: TreeItem[] = [];
     noteList.forEach((n) => {
@@ -167,13 +172,14 @@
         .sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }))
     : [];
   $: visibleFlat = isSearching
-    ? searchResults.map((n) => ({ key: `note:${n.id}`, item: { id: n.id, title: n.title, children: [] } as TreeItem }))
+    ? searchResults.map((n) => ({ key: `note:${n.id}`, item: { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown } as TreeItem }))
     : flattenVisible(tree, expandedNotes);
   $: if (visibleFlat.length && !visibleFlat.some((v) => v.key === focusedKey)) {
     focusedKey = visibleFlat[0].key;
   }
   $: currentPath = activeParentId != null ? (notes.find((n) => n.id === activeParentId) ? notePath(notes.find((n) => n.id === activeParentId)!) : 'Notes') : 'Notes';
   $: searchMatchIndex = isSearching ? searchResults.findIndex((n) => n.id === selectedId) : -1;
+  $: selectedNoteCreatedAt = notes.find((n) => n.id === selectedId)?.createdAt ?? null;
 
   // ---------- data loading ----------
 
@@ -188,10 +194,11 @@
 
   // ---------- note editor ----------
 
-  const deriveTitleFromContent = (content: string): string => {
+  const deriveTitleFromContent = (content: string, isMarkdown: boolean): string => {
     const firstLine = content.split('\n').find((line) => line.trim().length > 0)?.trim() ?? '';
-    if (!firstLine) return 'Untitled';
-    return firstLine.length > 80 ? firstLine.slice(0, 80) : firstLine;
+    const cleaned = isMarkdown ? firstLine.replace(/^#{1,6}\s+/, '') : firstLine;
+    if (!cleaned) return 'Untitled';
+    return cleaned.length > 80 ? cleaned.slice(0, 80) : cleaned;
   };
 
   const selectNote = (note: NoteRecord, focusEditor = true) => {
@@ -199,6 +206,7 @@
     activeParentId = note.parentId;
     title = note.title;
     noteText = note.content;
+    isMarkdownActive = note.isMarkdown;
     titleAutoDerive = note.title === 'Untitled' || note.title.trim() === '';
     if (focusEditor) requestAnimationFrame(() => textarea?.focus());
   };
@@ -239,9 +247,14 @@
 
   const handleEditorInput = () => {
     if (titleAutoDerive) {
-      title = deriveTitleFromContent(noteText);
+      title = deriveTitleFromContent(noteText, isMarkdownActive);
     }
     scheduleSave();
+  };
+
+  const handleMarkdownEditorUpdate = (markdown: string) => {
+    noteText = markdown;
+    handleEditorInput();
   };
 
   const handleTitleInput = () => {
@@ -249,7 +262,20 @@
     scheduleSave();
   };
 
+  const toggleMarkdown = () => {
+    if (selectedId == null) return;
+    const next = !isMarkdownActive;
+    isMarkdownActive = next;
+    void notesService.save({ id: selectedId, isMarkdown: next }).then((saved) => {
+      notes = notes.map((note) => (note.id === saved.id ? saved : note));
+    });
+  };
+
   const insertAtCursor = (text: string) => {
+    if (isMarkdownActive) {
+      markdownEditorRef?.insertAtCursor(text);
+      return;
+    }
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
     noteText = `${noteText.slice(0, start)}${text}${noteText.slice(end)}`;
@@ -568,7 +594,7 @@
     }
 
     if (event.key === 'Escape') {
-      if (contextMenu || shortcutsOpen || settingsOpen) return;
+      if (contextMenu || shortcutsOpen || settingsOpen || markdownHelpOpen) return;
       event.preventDefault();
       void invoke('hide_window').catch(() => {
         status = 'Window hidden';
@@ -627,22 +653,34 @@
       </svg>
     </button>
 
-    <button class="toolbar-btn shortcuts-btn" on:click={() => (shortcutsOpen = true)} aria-label="Keyboard shortcuts">
-      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
-        <circle cx="8" cy="8" r="6.5" />
-        <path d="M6.1 6.2a1.9 1.9 0 1 1 2.7 1.7c-.7.35-.9.7-.9 1.4" stroke-linejoin="round" />
-        <circle cx="8" cy="11.4" r="0.15" fill="currentColor" />
-      </svg>
-      <span>Shortcuts</span>
-    </button>
+    <div class="toolbar-right">
+      {#if isMarkdownActive}
+        <button class="toolbar-btn" on:click={() => (markdownHelpOpen = true)} aria-label="Markdown guide">
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 4h5M2 8h5M2 12h3" />
+            <path d="M10.5 3.5v9M10.5 3.5l2 2.5 2-2.5M14.5 8.5l-2 2.5-2-2.5" />
+          </svg>
+          <span>Markdown</span>
+        </button>
+      {/if}
 
-    <button class="toolbar-btn" on:click={() => (settingsOpen = true)} aria-label="Settings">
-      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="8" cy="8" r="2.2" />
-        <path d="M8 2v1.6M8 12.4V14M14 8h-1.6M3.6 8H2M12.13 3.87l-1.13 1.13M4.99 11.01l-1.13 1.13M12.13 12.13l-1.13-1.13M4.99 4.99 3.87 3.87" />
-      </svg>
-      <span>Settings</span>
-    </button>
+      <button class="toolbar-btn" on:click={() => (shortcutsOpen = true)} aria-label="Keyboard shortcuts">
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+          <circle cx="8" cy="8" r="6.5" />
+          <path d="M6.1 6.2a1.9 1.9 0 1 1 2.7 1.7c-.7.35-.9.7-.9 1.4" stroke-linejoin="round" />
+          <circle cx="8" cy="11.4" r="0.15" fill="currentColor" />
+        </svg>
+        <span>Shortcuts</span>
+      </button>
+
+      <button class="toolbar-btn" on:click={() => (settingsOpen = true)} aria-label="Settings">
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="8" cy="8" r="2.2" />
+          <path d="M8 2v1.6M8 12.4V14M14 8h-1.6M3.6 8H2M12.13 3.87l-1.13 1.13M4.99 11.01l-1.13 1.13M12.13 12.13l-1.13-1.13M4.99 4.99 3.87 3.87" />
+        </svg>
+        <span>Settings</span>
+      </button>
+    </div>
   </div>
 
   <div class="shell">
@@ -661,7 +699,7 @@
     >
       {#if isSearching}
         {#each searchResults as note (note.id)}
-          <TreeNode item={{ id: note.id, title: note.title, children: [] }} depth={0} {...treeNodeProps} />
+          <TreeNode item={{ id: note.id, title: note.title, children: [], isMarkdown: note.isMarkdown }} depth={0} {...treeNodeProps} />
         {/each}
         {#if !searchResults.length}
           <p class="empty-hint">No matches</p>
@@ -706,13 +744,23 @@
       </div>
     </header>
 
-    <textarea
-      bind:this={textarea}
-      bind:value={noteText}
-      class="editor"
-      placeholder="Start typing instantly..."
-      on:input={handleEditorInput}
-    ></textarea>
+    {#if isMarkdownActive}
+      <MarkdownEditor
+        bind:this={markdownEditorRef}
+        content={noteText}
+        noteId={selectedId ?? -1}
+        onUpdate={handleMarkdownEditorUpdate}
+        placeholder="Start typing instantly..."
+      />
+    {:else}
+      <textarea
+        bind:this={textarea}
+        bind:value={noteText}
+        class="editor"
+        placeholder="Start typing instantly..."
+        on:input={handleEditorInput}
+      ></textarea>
+    {/if}
 
     <footer class="footer">
       <div class="search-box">
@@ -741,7 +789,21 @@
           </button>
         {/if}
       </div>
-      <span class="status">{status}</span>
+      <button
+        class="md-toggle"
+        class:active={isMarkdownActive}
+        on:click={toggleMarkdown}
+        disabled={selectedId == null}
+        aria-pressed={isMarkdownActive}
+      >
+        Markdown
+      </button>
+      <div class="status-group">
+        <span class="status">{status}</span>
+        {#if selectedNoteCreatedAt}
+          <span class="created-hint">{selectedNoteCreatedAt.replace('T', ' ')}</span>
+        {/if}
+      </div>
     </footer>
   </section>
   </div>
@@ -763,6 +825,10 @@
   />
 {/if}
 
+{#if markdownHelpOpen}
+  <MarkdownHelpPanel onClose={() => (markdownHelpOpen = false)} />
+{/if}
+
 <style>
   :global(html[data-theme='light']) {
     color-scheme: light;
@@ -774,6 +840,7 @@
     --border: rgba(17, 24, 39, 0.1);
     --accent: #2563eb;
     --accent-soft: rgba(37, 99, 235, 0.14);
+    --md-color: #7c3aed;
   }
 
   :global(html:not([data-theme='light'])) {
@@ -784,8 +851,9 @@
     --text: #ecebe7;
     --muted: #97958d;
     --border: rgba(255,255,255,0.08);
-    --accent: #e0a458;
-    --accent-soft: rgba(224, 164, 88, 0.18);
+    --accent: #5b9bd5;
+    --accent-soft: rgba(91, 155, 213, 0.18);
+    --md-color: #a78bfa;
   }
 
   :global(body.resizing-sidebar) {
@@ -928,6 +996,32 @@
     font-size: 0.7rem;
   }
 
+  .md-toggle {
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    background: var(--panel-2);
+    color: var(--muted);
+    font-size: 0.72rem;
+    padding: 0.3rem 0.55rem;
+    cursor: pointer;
+  }
+
+  .md-toggle:hover:not(:disabled) {
+    color: var(--text);
+  }
+
+  .md-toggle.active,
+  .md-toggle.active:hover {
+    background: var(--border);
+    color: var(--md-color);
+  }
+
+  .md-toggle:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
   .action-toolbar {
     display: flex;
     align-items: center;
@@ -963,7 +1057,10 @@
     opacity: 0.7;
   }
 
-  .toolbar-btn.shortcuts-btn {
+  .toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
     margin-left: auto;
   }
 
@@ -977,6 +1074,11 @@
     background: transparent;
     color: inherit;
     line-height: 1.55;
+  }
+
+  .editor::placeholder {
+    color: var(--muted);
+    opacity: 1;
   }
 
   .footer {
@@ -1014,6 +1116,19 @@
     text-align: center;
   }
 
+  .status-group {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-left: auto;
+  }
+
+  .created-hint {
+    font-size: 0.72rem;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
   .search-nav-btn {
     display: flex;
     align-items: center;
@@ -1036,7 +1151,4 @@
     cursor: default;
   }
 
-  .footer span:last-child {
-    margin-left: auto;
-  }
 </style>

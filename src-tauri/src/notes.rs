@@ -12,6 +12,7 @@ pub struct Note {
     pub parent_id: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
+    pub is_markdown: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -20,16 +21,19 @@ pub struct NoteInput {
     pub title: Option<String>,
     pub content: Option<String>,
     pub parent_id: Option<i64>,
+    pub is_markdown: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NoteUpdate {
     pub id: i64,
     pub title: Option<String>,
     pub content: Option<String>,
+    pub is_markdown: Option<bool>,
 }
 
-const SELECT_COLUMNS: &str = "id, title, content, parent_id, created_at, updated_at";
+const SELECT_COLUMNS: &str = "id, title, content, parent_id, created_at, updated_at, is_markdown";
 
 fn row_to_note(row: &Row) -> rusqlite::Result<Note> {
     Ok(Note {
@@ -39,6 +43,7 @@ fn row_to_note(row: &Row) -> rusqlite::Result<Note> {
         parent_id: row.get(3)?,
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
+        is_markdown: row.get(6)?,
     })
 }
 
@@ -77,10 +82,11 @@ pub fn create_note(db: State<DbState>, note: NoteInput) -> Result<Note, String> 
     let now = now_iso();
     let title = note.title.unwrap_or_else(|| "Untitled".to_string());
     let content = note.content.unwrap_or_default();
+    let is_markdown = note.is_markdown.unwrap_or(false);
 
     conn.execute(
-        "INSERT INTO notes (title, content, parent_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
-        params![title, content, note.parent_id, now],
+        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+        params![title, content, note.parent_id, now, is_markdown],
     )
     .map_err(|e| e.to_string())?;
 
@@ -94,11 +100,12 @@ pub fn update_note(db: State<DbState>, note: NoteUpdate) -> Result<Note, String>
 
     let title = note.title.unwrap_or(existing.title);
     let content = note.content.unwrap_or(existing.content);
+    let is_markdown = note.is_markdown.unwrap_or(existing.is_markdown);
     let now = now_iso();
 
     conn.execute(
-        "UPDATE notes SET title = ?1, content = ?2, updated_at = ?3 WHERE id = ?4",
-        params![title, content, now, note.id],
+        "UPDATE notes SET title = ?1, content = ?2, updated_at = ?3, is_markdown = ?4 WHERE id = ?5",
+        params![title, content, now, is_markdown, note.id],
     )
     .map_err(|e| e.to_string())?;
 
@@ -155,8 +162,8 @@ pub fn duplicate_note(db: State<DbState>, id: i64) -> Result<Note, String> {
     let title = format!("{} (copy)", source.title);
 
     conn.execute(
-        "INSERT INTO notes (title, content, parent_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
-        params![title, source.content, source.parent_id, now],
+        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+        params![title, source.content, source.parent_id, now, source.is_markdown],
     )
     .map_err(|e| e.to_string())?;
 
@@ -177,5 +184,17 @@ mod tests {
     fn note_input_defaults_parent_id_to_root_when_omitted() {
         let input: NoteInput = serde_json::from_str(r#"{"title":"Hi","content":""}"#).unwrap();
         assert_eq!(input.parent_id, None);
+    }
+
+    #[test]
+    fn note_input_deserializes_camel_case_is_markdown() {
+        let input: NoteInput = serde_json::from_str(r#"{"title":"Hi","content":"","isMarkdown":true}"#).unwrap();
+        assert_eq!(input.is_markdown, Some(true));
+    }
+
+    #[test]
+    fn note_update_deserializes_camel_case_is_markdown() {
+        let input: NoteUpdate = serde_json::from_str(r#"{"id":1,"isMarkdown":true}"#).unwrap();
+        assert_eq!(input.is_markdown, Some(true));
     }
 }

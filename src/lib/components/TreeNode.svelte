@@ -3,6 +3,7 @@
     id: number;
     title: string;
     children: TreeItem[];
+    isMarkdown: boolean;
   }
 
   export let item: TreeItem;
@@ -80,14 +81,25 @@
         <path d="M3 1 L7 5 L3 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
     </span>
-    <svg class="icon folder-icon" width="13" height="13" viewBox="0 0 16 16">
+    <svg class="icon folder-icon" width="17" height="17" viewBox="0 0 16 16">
       <path
         fill="currentColor"
         d="M1.5 3A1.5 1.5 0 0 1 3 1.5h3.17a1.5 1.5 0 0 1 1.06.44l.83.82H13A1.5 1.5 0 0 1 14.5 4.26V12.5A1.5 1.5 0 0 1 13 14H3a1.5 1.5 0 0 1-1.5-1.5V3Z"
       />
+      {#if item.isMarkdown}
+        <text x="7.9" y="12.2" text-anchor="middle" font-size="5.2" font-weight="800" fill="#fff" font-family="inherit">MD</text>
+      {/if}
+    </svg>
+  {:else if item.isMarkdown}
+    <svg class="icon md-icon" width="16" height="16" viewBox="0 0 16 16">
+      <path
+        fill="currentColor"
+        d="M4 1.5h5.17a1 1 0 0 1 .7.3l2.83 2.83a1 1 0 0 1 .3.7V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.5a1 1 0 0 1 1-1Z"
+      />
+      <text x="7.7" y="12.4" text-anchor="middle" font-size="5.6" font-weight="800" fill="#fff" font-family="inherit">MD</text>
     </svg>
   {:else}
-    <svg class="icon note-icon" width="12" height="12" viewBox="0 0 16 16">
+    <svg class="icon note-icon" width="16" height="16" viewBox="0 0 16 16">
       <path
         fill="currentColor"
         d="M4 1.5h5.17a1 1 0 0 1 .7.3l2.83 2.83a1 1 0 0 1 .3.7V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.5a1 1 0 0 1 1-1Z"
@@ -153,13 +165,13 @@
     background: var(--panel-2);
   }
 
-  .row.selected {
-    background: var(--accent-soft);
+  .row.focused {
+    background: var(--panel-2);
   }
 
-  .row.focused {
-    outline: 1px solid var(--accent);
-    outline-offset: -1px;
+  .row.selected {
+    background: var(--panel-2);
+    box-shadow: inset 2px 0 0 0 var(--accent);
   }
 
   .chevron-btn {
@@ -194,6 +206,10 @@
   .note-icon {
     color: var(--muted);
     opacity: 0.85;
+  }
+
+  .md-icon {
+    color: var(--md-color);
   }
 
   .label {
