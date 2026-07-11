@@ -376,7 +376,7 @@
       '---',
       '',
       '*Start typing to replace this note.*',
-    ].join('\n');
+    ].join('\n\n\n');
 
     const created = await notesService.create({ title: 'Welcome to FlashPad', content, parentId: null, isMarkdown: true });
     notes = [created, ...notes];
