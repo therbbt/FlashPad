@@ -4,6 +4,8 @@
     title: string;
     children: TreeItem[];
     isMarkdown: boolean;
+    isLocked: boolean;
+    createdAt: string;
   }
 
   export let item: TreeItem;
@@ -12,6 +14,7 @@
   export let selectedNoteId: number | null;
   export let focusedKey: string | null;
   export let renamingKey: string | null;
+  export let cutId: number | null = null;
   export let onToggleExpand: (id: number) => void;
   export let onSelectNote: (id: number) => void;
   export let onNoteContextMenu: (event: MouseEvent, noteId: number) => void;
@@ -44,6 +47,7 @@
   class="row"
   class:selected={selectedNoteId === item.id}
   class:focused={isFocused}
+  class:cut={cutId === item.id}
   style="padding-left: {depth * 14 + (hasChildren ? 4 : 20)}px"
   on:click={() => {
     onFocusItem(key);
@@ -127,6 +131,12 @@
   {:else}
     <span class="label">{item.title || 'Untitled'}</span>
   {/if}
+  {#if item.isLocked}
+    <svg class="icon lock-icon" width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3.5" y="7" width="9" height="7" rx="1.2" />
+      <path d="M5.5 7V4.5a2.5 2.5 0 0 1 5 0V7" />
+    </svg>
+  {/if}
 </div>
 {#if hasChildren && isExpanded}
   {#each item.children as child (child.id)}
@@ -137,6 +147,7 @@
       {selectedNoteId}
       {focusedKey}
       {renamingKey}
+      {cutId}
       {onToggleExpand}
       {onSelectNote}
       {onNoteContextMenu}
@@ -150,6 +161,7 @@
 <style>
   .row {
     display: flex;
+    flex-shrink: 0;
     align-items: center;
     gap: 0.35rem;
     padding: 0.22rem 0.4rem;
@@ -171,7 +183,10 @@
 
   .row.selected {
     background: var(--panel-2);
-    box-shadow: inset 2px 0 0 0 var(--accent);
+  }
+
+  .row.cut {
+    opacity: 0.5;
   }
 
   .chevron-btn {
@@ -215,6 +230,13 @@
   .label {
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .lock-icon {
+    flex-shrink: 0;
+    color: var(--muted);
+    margin-left: auto;
+    padding-left: 0.3rem;
   }
 
   .rename-input {

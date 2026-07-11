@@ -11,6 +11,7 @@
   import SettingsPanel from './lib/components/SettingsPanel.svelte';
   import MarkdownEditor from './lib/components/MarkdownEditor.svelte';
   import MarkdownHelpPanel from './lib/components/MarkdownHelpPanel.svelte';
+  import ConfirmDialog from './lib/components/ConfirmDialog.svelte';
 
   const notesService = new NotesService();
   const settingsService = new SettingsService();
@@ -30,6 +31,8 @@
   let focusedKey: string | null = null;
   let renamingKey: string | null = null;
   let contextMenu: { x: number; y: number; items: ContextMenuItem[] } | null = null;
+  let confirmState: { message: string; resolve: (value: boolean) => void } | null = null;
+  let clipboard: { id: number; mode: 'copy' | 'cut' } | null = null;
   let shortcutsOpen = false;
   let settingsOpen = false;
   let markdownHelpOpen = false;
@@ -44,6 +47,7 @@
   let status = 'Ready';
   let theme: FlashPadSettings['theme'] = 'dark';
   let isMarkdownActive = false;
+  let isLockedActive = false;
   let textarea: HTMLTextAreaElement;
   let markdownEditorRef: MarkdownEditor | undefined;
   let treeEl: HTMLDivElement;
@@ -107,7 +111,7 @@
 
   const buildTree = (noteList: NoteRecord[]): TreeItem[] => {
     const nodeById = new Map<number, TreeItem>();
-    noteList.forEach((n) => nodeById.set(n.id, { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown }));
+    noteList.forEach((n) => nodeById.set(n.id, { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown, isLocked: n.isLocked, createdAt: n.createdAt }));
 
     const roots: TreeItem[] = [];
     noteList.forEach((n) => {
@@ -117,8 +121,10 @@
       else roots.push(node);
     });
 
+    // Oldest first - createdAt is a fixed-width ISO-like string, so plain
+    // string comparison already sorts chronologically.
     const sortItems = (items: TreeItem[]) => {
-      items.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
+      items.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       items.forEach((item) => sortItems(item.children));
     };
     sortItems(roots);
@@ -172,7 +178,7 @@
         .sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }))
     : [];
   $: visibleFlat = isSearching
-    ? searchResults.map((n) => ({ key: `note:${n.id}`, item: { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown } as TreeItem }))
+    ? searchResults.map((n) => ({ key: `note:${n.id}`, item: { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown, isLocked: n.isLocked, createdAt: n.createdAt } as TreeItem }))
     : flattenVisible(tree, expandedNotes);
   $: if (visibleFlat.length && !visibleFlat.some((v) => v.key === focusedKey)) {
     focusedKey = visibleFlat[0].key;
@@ -207,6 +213,7 @@
     title = note.title;
     noteText = note.content;
     isMarkdownActive = note.isMarkdown;
+    isLockedActive = note.isLocked;
     titleAutoDerive = note.title === 'Untitled' || note.title.trim() === '';
     if (focusEditor) requestAnimationFrame(() => textarea?.focus());
   };
@@ -246,6 +253,7 @@
   };
 
   const handleEditorInput = () => {
+    if (isLockedActive) return;
     if (titleAutoDerive) {
       title = deriveTitleFromContent(noteText, isMarkdownActive);
     }
@@ -253,17 +261,19 @@
   };
 
   const handleMarkdownEditorUpdate = (markdown: string) => {
+    if (isLockedActive) return;
     noteText = markdown;
     handleEditorInput();
   };
 
   const handleTitleInput = () => {
+    if (isLockedActive) return;
     titleAutoDerive = false;
     scheduleSave();
   };
 
   const toggleMarkdown = () => {
-    if (selectedId == null) return;
+    if (selectedId == null || isLockedActive) return;
     const next = !isMarkdownActive;
     isMarkdownActive = next;
     void notesService.save({ id: selectedId, isMarkdown: next }).then((saved) => {
@@ -272,6 +282,7 @@
   };
 
   const insertAtCursor = (text: string) => {
+    if (isLockedActive) return;
     if (isMarkdownActive) {
       markdownEditorRef?.insertAtCursor(text);
       return;
@@ -328,30 +339,46 @@
   // untitled note, and doubles as a quick reference for the core shortcuts.
   const createWelcomeNote = async () => {
     const content = [
-      'Welcome to FlashPad',
+      '# Welcome to FlashPad',
       '',
-      `Press ${hotkeySetting} anywhere to open FlashPad instantly.`,
-      'Press Esc to hide it - it keeps running in the tray.',
+      `Press **${hotkeySetting}** anywhere to open FlashPad instantly.`,
+      'Press **Esc** to hide it - it keeps running in the tray.',
       '',
-      'Right-click a note (or the sidebar background) to create a note,',
-      'rename, duplicate, move, or delete. Any note can hold subnotes -',
-      'once it has one, it shows a folder icon: click it to open its own',
-      'content, click the little arrow to expand or collapse its subnotes.',
+      '## Notes & subnotes',
       '',
-      'Use the search box at the bottom to find notes, with prev/next',
-      'buttons (or Enter / Shift+Enter) to step through matches.',
+      'Right-click a note (or the sidebar background) to create a note, rename, duplicate, move, or delete. Any note can hold subnotes - once it has one, it shows a folder icon: click it to open its own content, click the little arrow to expand or collapse its subnotes.',
       '',
-      'Alt+1  Insert a divider',
-      'Alt+2  Insert a timestamp',
-      'Alt+3  Insert a dateline',
+      '## Markdown',
       '',
-      'The gear icon in Settings lets you launch FlashPad at login and',
-      'change the hotkey above to whatever you like.',
+      'Toggle **Markdown** at the bottom of a note to format as you type - headings, **bold**, lists, and more. Use the Markdown guide button (top right) for the full syntax.',
       '',
-      'Start typing to replace this note.',
+      '## Locking notes',
+      '',
+      "Right-click a note's text (or press **Alt+L**) to lock it - a locked note can't be edited until you unlock it again.",
+      '',
+      '## Search',
+      '',
+      'Use the search box at the bottom to find notes, with prev/next buttons (or **Enter** / **Shift+Enter**) to step through matches.',
+      '',
+      '## Shortcuts',
+      '',
+      '- **Alt+N** - Create a new note',
+      '- **Alt+L** - Lock / unlock the current note',
+      '- **Alt+D** - Delete the current note (and its subnotes)',
+      '- **Alt+1** - Insert a divider',
+      '- **Alt+2** - Insert a timestamp',
+      '- **Alt+3** - Insert a dateline',
+      '',
+      '## Settings',
+      '',
+      'The gear icon in Settings lets you launch FlashPad at login and change the hotkey above to whatever you like.',
+      '',
+      '---',
+      '',
+      '*Start typing to replace this note.*',
     ].join('\n');
 
-    const created = await notesService.create({ title: 'Welcome to FlashPad', content, parentId: null });
+    const created = await notesService.create({ title: 'Welcome to FlashPad', content, parentId: null, isMarkdown: true });
     notes = [created, ...notes];
     selectNote(created);
     focusedKey = `note:${created.id}`;
@@ -365,6 +392,7 @@
     if (!trimmed) return;
 
     const id = Number(key.slice('note:'.length));
+    if (notes.find((n) => n.id === id)?.isLocked) return;
     const updated = await notesService.save({ id, title: trimmed });
     notes = notes.map((n) => (n.id === id ? updated : n));
     if (selectedId === id) {
@@ -384,14 +412,16 @@
     ];
   };
 
-  const moveNoteTo = async (id: number, parentId: number | null) => {
+  const moveNoteTo = async (id: number, parentId: number | null): Promise<boolean> => {
     try {
       const updated = await notesService.move(id, parentId);
       notes = notes.map((n) => (n.id === id ? updated : n));
       if (selectedId === id) activeParentId = parentId;
       status = 'Moved';
+      return true;
     } catch (err) {
       status = err instanceof Error ? err.message : 'Move failed';
+      return false;
     }
   };
 
@@ -402,6 +432,39 @@
     status = 'Duplicated';
   };
 
+  const toggleLock = async (id: number) => {
+    const note = notes.find((n) => n.id === id);
+    if (!note) return;
+    const next = !note.isLocked;
+    const saved = await notesService.save({ id, isLocked: next });
+    notes = notes.map((n) => (n.id === saved.id ? saved : n));
+    if (selectedId === id) isLockedActive = saved.isLocked;
+    status = next ? 'Locked' : 'Unlocked';
+  };
+
+  const copyNote = (id: number) => {
+    clipboard = { id, mode: 'copy' };
+    status = 'Copied';
+  };
+
+  const cutNote = (id: number) => {
+    clipboard = { id, mode: 'cut' };
+    status = 'Cut';
+  };
+
+  const pasteNote = async (targetParentId: number | null) => {
+    if (!clipboard) return;
+    const { id, mode } = clipboard;
+    if (mode === 'copy') {
+      const created = await notesService.duplicate(id);
+      notes = [created, ...notes];
+      await moveNoteTo(created.id, targetParentId);
+    } else {
+      const moved = await moveNoteTo(id, targetParentId);
+      if (moved) clipboard = null;
+    }
+  };
+
   const deleteNoteById = async (id: number) => {
     const descendantIds = collectDescendantNoteIds(id);
     const removedIds = new Set([id, ...descendantIds]);
@@ -409,7 +472,7 @@
       descendantIds.size > 0
         ? `Delete this note and ${descendantIds.size} note${descendantIds.size === 1 ? '' : 's'} inside it? This cannot be undone.`
         : 'Delete this note? This cannot be undone.';
-    if (!confirm(message)) return;
+    if (!(await confirmDialog(message))) return;
 
     await notesService.delete(id);
     notes = notes.filter((n) => !removedIds.has(n.id));
@@ -448,12 +511,19 @@
     contextMenu = null;
   };
 
+  const confirmDialog = (message: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      confirmState = { message, resolve };
+    });
+  };
+
   const openBackgroundMenu = (event: MouseEvent) => {
     contextMenu = {
       x: event.clientX,
       y: event.clientY,
       items: [
         { label: 'New note', action: () => void createNoteIn(activeParentId) },
+        { label: 'Paste', disabled: clipboard == null, action: () => void pasteNote(activeParentId) },
         { label: '', separator: true },
         { label: 'Refresh', action: () => void refreshAll() },
         { label: 'Collapse all', action: () => {
@@ -465,17 +535,37 @@
   };
 
   const openNoteMenu = (event: MouseEvent, noteId: number) => {
+    const note = notes.find((n) => n.id === noteId);
+    const locked = note?.isLocked ?? false;
     contextMenu = {
       x: event.clientX,
       y: event.clientY,
       items: [
         { label: 'Open', action: () => void openNote(noteId, true) },
         { label: 'New subnote', action: () => void createNoteIn(noteId) },
-        { label: 'Rename', action: () => (renamingKey = `note:${noteId}`) },
+        { label: 'Rename', disabled: locked, action: () => (renamingKey = `note:${noteId}`) },
         { label: 'Duplicate', action: () => void duplicateNote(noteId) },
         { label: 'Move to…', submenu: buildMoveTargetItems((target) => void moveNoteTo(noteId, target), noteId) },
         { label: '', separator: true },
+        { label: locked ? 'Unlock' : 'Lock', action: () => void toggleLock(noteId) },
+        { label: '', separator: true },
         { label: 'Delete', danger: true, action: () => void deleteNoteById(noteId) },
+      ],
+    };
+  };
+
+  const openEditorMenu = (event: MouseEvent) => {
+    if (selectedId == null) return;
+    const id = selectedId;
+    contextMenu = {
+      x: event.clientX,
+      y: event.clientY,
+      items: [
+        { label: 'Copy', action: () => copyNote(id) },
+        { label: 'Cut', action: () => cutNote(id) },
+        { label: 'Paste', disabled: clipboard == null, action: () => void pasteNote(id) },
+        { label: '', separator: true },
+        { label: isLockedActive ? 'Unlock' : 'Lock', action: () => void toggleLock(id) },
       ],
     };
   };
@@ -485,6 +575,7 @@
     selectedNoteId: selectedId,
     focusedKey,
     renamingKey,
+    cutId: clipboard?.mode === 'cut' ? clipboard.id : null,
     onToggleExpand: toggleExpand,
     onSelectNote: (id: number) => void openNote(id),
     onNoteContextMenu: openNoteMenu,
@@ -570,6 +661,10 @@
             if (selectedId != null) void createNoteIn(selectedId);
           } },
         { label: '', separator: true },
+        { label: isLockedActive ? 'Unlock' : 'Lock', disabled: selectedId == null, action: () => {
+            if (selectedId != null) void toggleLock(selectedId);
+          } },
+        { label: '', separator: true },
         { label: 'Delete', danger: true, action: () => {
             if (selectedId != null) void deleteNoteById(selectedId);
           } },
@@ -593,8 +688,23 @@
       insertDateline();
     }
 
+    if (event.altKey && event.key.toLowerCase() === 'n') {
+      event.preventDefault();
+      void createNoteIn(activeParentId);
+    }
+
+    if (event.altKey && event.key.toLowerCase() === 'l') {
+      event.preventDefault();
+      if (selectedId != null) void toggleLock(selectedId);
+    }
+
+    if (event.altKey && event.key.toLowerCase() === 'd') {
+      event.preventDefault();
+      if (selectedId != null) void deleteNoteById(selectedId);
+    }
+
     if (event.key === 'Escape') {
-      if (contextMenu || shortcutsOpen || settingsOpen || markdownHelpOpen) return;
+      if (contextMenu || shortcutsOpen || settingsOpen || markdownHelpOpen || confirmState) return;
       event.preventDefault();
       void invoke('hide_window').catch(() => {
         status = 'Window hidden';
@@ -699,7 +809,7 @@
     >
       {#if isSearching}
         {#each searchResults as note (note.id)}
-          <TreeNode item={{ id: note.id, title: note.title, children: [], isMarkdown: note.isMarkdown }} depth={0} {...treeNodeProps} />
+          <TreeNode item={{ id: note.id, title: note.title, children: [], isMarkdown: note.isMarkdown, isLocked: note.isLocked, createdAt: note.createdAt }} depth={0} {...treeNodeProps} />
         {/each}
         {#if !searchResults.length}
           <p class="empty-hint">No matches</p>
@@ -739,28 +849,39 @@
   <section class="editor-pane">
     <header class="topbar">
       <div class="title-block">
-        <input bind:value={title} class="title" placeholder="Untitled" on:input={handleTitleInput} />
+        <input bind:value={title} class="title" placeholder="Untitled" readonly={isLockedActive} on:input={handleTitleInput} />
         <span class="breadcrumb">{currentPath}</span>
       </div>
+      {#if isLockedActive}
+        <svg class="icon lock-indicator" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-label="Locked">
+          <rect x="3.5" y="7" width="9" height="7" rx="1.2" />
+          <path d="M5.5 7V4.5a2.5 2.5 0 0 1 5 0V7" />
+        </svg>
+      {/if}
     </header>
 
-    {#if isMarkdownActive}
-      <MarkdownEditor
-        bind:this={markdownEditorRef}
-        content={noteText}
-        noteId={selectedId ?? -1}
-        onUpdate={handleMarkdownEditorUpdate}
-        placeholder="Start typing instantly..."
-      />
-    {:else}
-      <textarea
-        bind:this={textarea}
-        bind:value={noteText}
-        class="editor"
-        placeholder="Start typing instantly..."
-        on:input={handleEditorInput}
-      ></textarea>
-    {/if}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="editor-content" on:contextmenu|preventDefault={openEditorMenu}>
+      {#if isMarkdownActive}
+        <MarkdownEditor
+          bind:this={markdownEditorRef}
+          content={noteText}
+          noteId={selectedId ?? -1}
+          onUpdate={handleMarkdownEditorUpdate}
+          placeholder="Start typing instantly..."
+          editable={!isLockedActive}
+        />
+      {:else}
+        <textarea
+          bind:this={textarea}
+          bind:value={noteText}
+          class="editor"
+          placeholder="Start typing instantly..."
+          readonly={isLockedActive}
+          on:input={handleEditorInput}
+        ></textarea>
+      {/if}
+    </div>
 
     <footer class="footer">
       <div class="search-box">
@@ -793,7 +914,7 @@
         class="md-toggle"
         class:active={isMarkdownActive}
         on:click={toggleMarkdown}
-        disabled={selectedId == null}
+        disabled={selectedId == null || isLockedActive}
         aria-pressed={isMarkdownActive}
       >
         Markdown
@@ -827,6 +948,20 @@
 
 {#if markdownHelpOpen}
   <MarkdownHelpPanel onClose={() => (markdownHelpOpen = false)} />
+{/if}
+
+{#if confirmState}
+  <ConfirmDialog
+    message={confirmState.message}
+    onConfirm={() => {
+      confirmState?.resolve(true);
+      confirmState = null;
+    }}
+    onCancel={() => {
+      confirmState?.resolve(false);
+      confirmState = null;
+    }}
+  />
 {/if}
 
 <style>
@@ -946,6 +1081,21 @@
     display: flex;
     flex-direction: column;
     gap: 1px;
+    /* Put the scrollbar on the left: flip the container to RTL (which moves
+       a vertical scrollbar to the left edge), then flip every row back to
+       LTR so text/content still reads normally. Also reserve the scrollbar's
+       width up front so rows don't reflow/narrow the moment the list grows
+       long enough to actually need it. */
+    direction: rtl;
+    scrollbar-gutter: stable;
+  }
+
+  /* :global() is required here - .row is rendered by the child TreeNode
+     component, so a plain scoped `.tree > *` never actually reaches it
+     (Svelte scopes descendant selectors to elements owned by *this*
+     component only). */
+  .tree > :global(*) {
+    direction: ltr;
   }
 
   .empty-hint {
@@ -964,6 +1114,13 @@
     flex: 1;
     display: flex;
     flex-direction: column;
+  }
+
+  .editor-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
 
   .topbar {
@@ -994,6 +1151,11 @@
   .breadcrumb {
     color: var(--muted);
     font-size: 0.7rem;
+  }
+
+  .lock-indicator {
+    flex-shrink: 0;
+    color: var(--muted);
   }
 
   .md-toggle {

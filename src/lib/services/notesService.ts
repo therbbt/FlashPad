@@ -8,6 +8,7 @@ export interface NoteRecord {
   createdAt: string;
   updatedAt: string;
   isMarkdown: boolean;
+  isLocked: boolean;
 }
 
 const STORAGE_KEY = 'flashpad.notes';
@@ -44,6 +45,7 @@ export class NotesService {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         isMarkdown: payload.isMarkdown ?? false,
+        isLocked: false,
       };
       const notes = [...readFallback(), note];
       writeFallback(notes);
@@ -54,7 +56,7 @@ export class NotesService {
     });
   }
 
-  async save(note: { id: number; title?: string; content?: string; isMarkdown?: boolean }): Promise<NoteRecord> {
+  async save(note: { id: number; title?: string; content?: string; isMarkdown?: boolean; isLocked?: boolean }): Promise<NoteRecord> {
     if (!isTauriRuntime()) {
       const notes = readFallback().map((item) => (item.id === note.id ? { ...item, ...note, updatedAt: new Date().toISOString() } : item));
       writeFallback(notes);
@@ -90,6 +92,7 @@ export class NotesService {
         title: `${source.title} (copy)`,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
+        isLocked: false,
       };
       writeFallback([...readFallback(), copy]);
       return copy;

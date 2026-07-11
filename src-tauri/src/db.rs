@@ -24,7 +24,8 @@ pub fn init(db_path: PathBuf) -> Connection {
             folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            is_markdown INTEGER NOT NULL DEFAULT 0
+            is_markdown INTEGER NOT NULL DEFAULT 0,
+            is_locked INTEGER NOT NULL DEFAULT 0
         );",
     )
     .expect("failed to create schema");
@@ -32,6 +33,7 @@ pub fn init(db_path: PathBuf) -> Connection {
     migrate_legacy_folder_column(&conn);
     migrate_folders_into_notes(&conn);
     migrate_add_markdown_column(&conn);
+    migrate_add_locked_column(&conn);
 
     conn.execute_batch("PRAGMA foreign_keys = ON;")
         .expect("failed to enable foreign keys");
@@ -189,6 +191,16 @@ fn migrate_add_markdown_column(conn: &Connection) {
         .expect("failed to add is_markdown column");
 }
 
+/// Adds the per-note lock toggle to existing databases created before it
+/// existed. Fresh installs already get the column via CREATE TABLE above.
+fn migrate_add_locked_column(conn: &Connection) {
+    if column_exists(conn, "is_locked") {
+        return;
+    }
+    conn.execute_batch("ALTER TABLE notes ADD COLUMN is_locked INTEGER NOT NULL DEFAULT 0;")
+        .expect("failed to add is_locked column");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,6 +279,7 @@ mod tests {
         assert!(!column_exists(&conn, "folder"));
         assert!(!table_exists(&conn, "folders"));
         assert!(column_exists(&conn, "is_markdown"));
+        assert!(column_exists(&conn, "is_locked"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -299,6 +312,37 @@ mod tests {
 
         // Safe to rerun.
         migrate_add_markdown_column(&conn);
+    }
+
+    #[test]
+    fn migrate_add_locked_column_adds_it_to_existing_databases() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL DEFAULT 'Untitled',
+                content TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                parent_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+                is_markdown INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO notes (title, content, created_at, updated_at, parent_id, is_markdown)
+            VALUES ('Existing note', '', '2026-01-01T00:00:00', '2026-01-01T00:00:00', NULL, 0);",
+        )
+        .unwrap();
+
+        assert!(!column_exists(&conn, "is_locked"));
+        migrate_add_locked_column(&conn);
+        assert!(column_exists(&conn, "is_locked"));
+
+        let is_locked: bool = conn
+            .query_row("SELECT is_locked FROM notes WHERE title = 'Existing note'", [], |r| r.get(0))
+            .unwrap();
+        assert!(!is_locked, "existing notes should default to unlocked");
+
+        // Safe to rerun.
+        migrate_add_locked_column(&conn);
     }
 
     #[test]

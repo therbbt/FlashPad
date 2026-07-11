@@ -9,18 +9,21 @@
   export let noteId: number;
   export let onUpdate: (markdown: string) => void;
   export let placeholder = '';
+  export let editable = true;
 
   let element: HTMLDivElement;
   let editor: Editor | undefined;
   let lastNoteId: number | undefined;
 
   export function insertAtCursor(text: string) {
+    if (!editable) return;
     editor?.chain().focus().insertContent(text).run();
   }
 
   onMount(() => {
     editor = new Editor({
       element,
+      editable,
       extensions: [
         StarterKit,
         Placeholder.configure({ placeholder }),
@@ -45,6 +48,8 @@
     editor.commands.setContent(content, false);
     lastNoteId = noteId;
   }
+
+  $: editor?.setEditable(editable);
 
   onDestroy(() => {
     editor?.destroy();

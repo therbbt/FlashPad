@@ -13,6 +13,7 @@ pub struct Note {
     pub created_at: String,
     pub updated_at: String,
     pub is_markdown: bool,
+    pub is_locked: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -22,6 +23,7 @@ pub struct NoteInput {
     pub content: Option<String>,
     pub parent_id: Option<i64>,
     pub is_markdown: Option<bool>,
+    pub is_locked: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,9 +33,10 @@ pub struct NoteUpdate {
     pub title: Option<String>,
     pub content: Option<String>,
     pub is_markdown: Option<bool>,
+    pub is_locked: Option<bool>,
 }
 
-const SELECT_COLUMNS: &str = "id, title, content, parent_id, created_at, updated_at, is_markdown";
+const SELECT_COLUMNS: &str = "id, title, content, parent_id, created_at, updated_at, is_markdown, is_locked";
 
 fn row_to_note(row: &Row) -> rusqlite::Result<Note> {
     Ok(Note {
@@ -44,6 +47,7 @@ fn row_to_note(row: &Row) -> rusqlite::Result<Note> {
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
         is_markdown: row.get(6)?,
+        is_locked: row.get(7)?,
     })
 }
 
@@ -83,10 +87,11 @@ pub fn create_note(db: State<DbState>, note: NoteInput) -> Result<Note, String> 
     let title = note.title.unwrap_or_else(|| "Untitled".to_string());
     let content = note.content.unwrap_or_default();
     let is_markdown = note.is_markdown.unwrap_or(false);
+    let is_locked = note.is_locked.unwrap_or(false);
 
     conn.execute(
-        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
-        params![title, content, note.parent_id, now, is_markdown],
+        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown, is_locked) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6)",
+        params![title, content, note.parent_id, now, is_markdown, is_locked],
     )
     .map_err(|e| e.to_string())?;
 
@@ -98,14 +103,28 @@ pub fn update_note(db: State<DbState>, note: NoteUpdate) -> Result<Note, String>
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let existing = find_note(&conn, note.id)?;
 
+    let is_locked = note.is_locked.unwrap_or(existing.is_locked);
+
+    // Defense-in-depth: the primary enforcement is the read-only editor in
+    // the UI, but reject here too in case a stray autosave races the lock.
+    // Unlocking-and-editing in the same call (e.g. from a future "unlock and
+    // edit" action) is still allowed.
+    if existing.is_locked
+        && is_locked
+        && (note.title.as_ref().is_some_and(|t| *t != existing.title)
+            || note.content.as_ref().is_some_and(|c| *c != existing.content))
+    {
+        return Err("Note is locked".into());
+    }
+
     let title = note.title.unwrap_or(existing.title);
     let content = note.content.unwrap_or(existing.content);
     let is_markdown = note.is_markdown.unwrap_or(existing.is_markdown);
     let now = now_iso();
 
     conn.execute(
-        "UPDATE notes SET title = ?1, content = ?2, updated_at = ?3, is_markdown = ?4 WHERE id = ?5",
-        params![title, content, now, is_markdown, note.id],
+        "UPDATE notes SET title = ?1, content = ?2, updated_at = ?3, is_markdown = ?4, is_locked = ?5 WHERE id = ?6",
+        params![title, content, now, is_markdown, is_locked, note.id],
     )
     .map_err(|e| e.to_string())?;
 
@@ -161,8 +180,10 @@ pub fn duplicate_note(db: State<DbState>, id: i64) -> Result<Note, String> {
     let now = now_iso();
     let title = format!("{} (copy)", source.title);
 
+    // A duplicate is never locked, even if the source is - it's a fresh copy
+    // the user will likely want to edit further.
     conn.execute(
-        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown, is_locked) VALUES (?1, ?2, ?3, ?4, ?4, ?5, 0)",
         params![title, source.content, source.parent_id, now, source.is_markdown],
     )
     .map_err(|e| e.to_string())?;
@@ -196,5 +217,17 @@ mod tests {
     fn note_update_deserializes_camel_case_is_markdown() {
         let input: NoteUpdate = serde_json::from_str(r#"{"id":1,"isMarkdown":true}"#).unwrap();
         assert_eq!(input.is_markdown, Some(true));
+    }
+
+    #[test]
+    fn note_input_deserializes_camel_case_is_locked() {
+        let input: NoteInput = serde_json::from_str(r#"{"title":"Hi","content":"","isLocked":true}"#).unwrap();
+        assert_eq!(input.is_locked, Some(true));
+    }
+
+    #[test]
+    fn note_update_deserializes_camel_case_is_locked() {
+        let input: NoteUpdate = serde_json::from_str(r#"{"id":1,"isLocked":true}"#).unwrap();
+        assert_eq!(input.is_locked, Some(true));
     }
 }

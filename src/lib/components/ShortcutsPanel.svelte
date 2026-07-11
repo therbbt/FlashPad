@@ -8,13 +8,17 @@
 
   const shortcuts: [string, string][] = [
     ['Esc', 'Hide the window (still running in the tray)'],
+    ['Alt+N', 'Create a new note'],
+    ['Alt+L', 'Lock / unlock the current note'],
+    ['Alt+D', 'Delete the current note (and its subnotes)'],
     ['Alt+1', 'Insert a divider line'],
     ['Alt+2', 'Insert a timestamp'],
     ['Alt+3', 'Insert a dateline'],
     ['Enter', "Open the focused note, toggling its subnotes if it has any"],
     ['↑ / ↓', 'Move through the tree or search results'],
     ['← / →', "Collapse / expand the focused note's subnotes"],
-    ['Right-click', 'Open the context menu (new, rename, move, delete, duplicate)'],
+    ['Right-click a note', 'New subnote, rename, duplicate, move, lock, delete'],
+    ['Right-click the text', 'Copy, cut, or paste the note; lock / unlock'],
     ['Enter / Esc', 'While renaming: confirm / cancel'],
   ];
 
