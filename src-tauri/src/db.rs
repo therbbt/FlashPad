@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -29,6 +29,7 @@ pub fn init(db_path: PathBuf) -> Connection {
     .expect("failed to create schema");
 
     migrate_legacy_folder_column(&conn);
+    migrate_folders_into_notes(&conn);
 
     conn.execute_batch("PRAGMA foreign_keys = ON;")
         .expect("failed to enable foreign keys");
@@ -73,8 +74,107 @@ fn migrate_legacy_folder_column(conn: &Connection) {
 
 fn column_exists(conn: &Connection, column: &str) -> bool {
     conn.prepare("SELECT 1 FROM pragma_table_info('notes') WHERE name = ?1")
-        .and_then(|mut stmt| stmt.exists(rusqlite::params![column]))
+        .and_then(|mut stmt| stmt.exists(params![column]))
         .unwrap_or(false)
+}
+
+fn now_iso() -> String {
+    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()
+}
+
+fn table_exists(conn: &Connection, table: &str) -> bool {
+    conn.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1")
+        .and_then(|mut stmt| stmt.exists(params![table]))
+        .unwrap_or(false)
+}
+
+/// Folders used to be a separate entity from notes. Now any note can hold
+/// child notes directly (parent_id references notes.id), so a folder is just
+/// a note with children - fold the old folders table into notes and rewire
+/// notes.folder_id into notes.parent_id, preserving hierarchy.
+fn migrate_folders_into_notes(conn: &Connection) {
+    if !table_exists(conn, "folders") {
+        return;
+    }
+
+    if !column_exists(conn, "parent_id") {
+        conn.execute_batch(
+            "ALTER TABLE notes ADD COLUMN parent_id INTEGER REFERENCES notes(id) ON DELETE CASCADE;",
+        )
+        .expect("failed to add parent_id column");
+    }
+
+    struct FolderRow {
+        id: i64,
+        name: String,
+        parent_id: Option<i64>,
+    }
+
+    let mut remaining: Vec<FolderRow> = {
+        let mut stmt = conn
+            .prepare("SELECT id, name, parent_id FROM folders")
+            .expect("failed to read folders");
+        stmt.query_map([], |row| {
+            Ok(FolderRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                parent_id: row.get(2)?,
+            })
+        })
+        .expect("failed to read folders")
+        .filter_map(Result::ok)
+        .collect()
+    };
+
+    let now = now_iso();
+    let mut id_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+
+    // Insert folders as notes with parents before children, regardless of
+    // the order they came back in (handles arbitrary nesting depth).
+    while !remaining.is_empty() {
+        let mut progressed = false;
+        remaining.retain(|folder| {
+            let ready = match folder.parent_id {
+                None => true,
+                Some(pid) => id_map.contains_key(&pid),
+            };
+            if !ready {
+                return true;
+            }
+            let new_parent_id = folder.parent_id.map(|pid| id_map[&pid]);
+            conn.execute(
+                "INSERT INTO notes (title, content, parent_id, created_at, updated_at) VALUES (?1, '', ?2, ?3, ?3)",
+                params![folder.name, new_parent_id, now],
+            )
+            .expect("failed to migrate folder into notes");
+            id_map.insert(folder.id, conn.last_insert_rowid());
+            progressed = true;
+            false
+        });
+        if !progressed {
+            break;
+        }
+    }
+
+    // Guarded independently of the table_exists(folders) check above: if a
+    // previous run of this migration got interrupted after dropping
+    // folder_id but before dropping the (by then empty) folders table, the
+    // column will already be gone on the next launch.
+    if column_exists(conn, "folder_id") {
+        for (old_folder_id, new_note_id) in &id_map {
+            conn.execute(
+                "UPDATE notes SET parent_id = ?1 WHERE folder_id = ?2",
+                params![new_note_id, old_folder_id],
+            )
+            .expect("failed to rewire notes.parent_id");
+        }
+
+        conn.execute_batch("ALTER TABLE notes DROP COLUMN folder_id;")
+            .expect("failed to drop notes.folder_id");
+    }
+
+    conn.execute_batch("DROP TABLE IF EXISTS folders;")
+        .expect("failed to drop folders table");
 }
 
 #[cfg(test)]
@@ -150,9 +250,113 @@ mod tests {
         let db_path = dir.join("test.sqlite3");
         let conn = init(db_path);
 
-        assert!(column_exists(&conn, "folder_id"));
+        assert!(column_exists(&conn, "parent_id"));
+        assert!(!column_exists(&conn, "folder_id"));
         assert!(!column_exists(&conn, "folder"));
+        assert!(!table_exists(&conn, "folders"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrates_folders_table_into_notes_preserving_hierarchy() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                parent_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL DEFAULT 'Untitled',
+                content TEXT NOT NULL DEFAULT '',
+                folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO folders (id, name, parent_id, created_at, updated_at)
+            VALUES (1, 'Work', NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00');
+            INSERT INTO folders (id, name, parent_id, created_at, updated_at)
+            VALUES (2, 'Projects', 1, '2026-01-01T00:00:00', '2026-01-01T00:00:00');
+            INSERT INTO notes (title, content, folder_id, created_at, updated_at)
+            VALUES ('Root note', '', NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00');
+            INSERT INTO notes (title, content, folder_id, created_at, updated_at)
+            VALUES ('Nested note', '', 2, '2026-01-01T00:00:00', '2026-01-01T00:00:00');",
+        )
+        .unwrap();
+
+        migrate_folders_into_notes(&conn);
+
+        assert!(column_exists(&conn, "parent_id"));
+        assert!(!column_exists(&conn, "folder_id"));
+        assert!(!table_exists(&conn, "folders"));
+
+        let root_note_parent: Option<i64> = conn
+            .query_row("SELECT parent_id FROM notes WHERE title = 'Root note'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(root_note_parent, None);
+
+        // 'Nested note' lived in 'Projects', which lived in 'Work' - both should
+        // now be notes themselves, with the hierarchy preserved via parent_id.
+        let nested_note_parent_name: String = conn
+            .query_row(
+                "SELECT p.title FROM notes n JOIN notes p ON n.parent_id = p.id WHERE n.title = 'Nested note'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(nested_note_parent_name, "Projects");
+
+        let projects_parent_name: String = conn
+            .query_row(
+                "SELECT p.title FROM notes n JOIN notes p ON n.parent_id = p.id WHERE n.title = 'Projects'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(projects_parent_name, "Work");
+
+        let work_parent: Option<i64> = conn
+            .query_row("SELECT parent_id FROM notes WHERE title = 'Work'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(work_parent, None);
+    }
+
+    #[test]
+    fn migrate_folders_into_notes_is_safe_to_rerun_after_a_partial_run() {
+        // Simulates an interrupted prior run: parent_id already added and
+        // populated, folder_id already dropped, but the (now empty) folders
+        // table wasn't dropped yet. Rerunning the migration must not panic.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                parent_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL DEFAULT 'Untitled',
+                content TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                parent_id INTEGER REFERENCES notes(id) ON DELETE CASCADE
+            );
+            INSERT INTO notes (title, content, created_at, updated_at, parent_id)
+            VALUES ('Existing note', '', '2026-01-01T00:00:00', '2026-01-01T00:00:00', NULL);",
+        )
+        .unwrap();
+
+        migrate_folders_into_notes(&conn);
+
+        assert!(!table_exists(&conn, "folders"));
+        assert!(column_exists(&conn, "parent_id"));
+        let note_count: i64 = conn.query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0)).unwrap();
+        assert_eq!(note_count, 1, "the pre-existing note should be untouched");
     }
 }

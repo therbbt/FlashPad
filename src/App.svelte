@@ -2,16 +2,15 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { NotesService, type NoteRecord } from './lib/services/notesService';
-  import { FoldersService, type FolderRecord } from './lib/services/foldersService';
   import { SettingsService, type FlashPadSettings } from './lib/services/settingsService';
   import { HotkeyService } from './lib/services/hotkeyService';
   import { DatabaseService } from './lib/services/databaseService';
   import TreeNode, { type TreeItem } from './lib/components/TreeNode.svelte';
   import ContextMenu, { type ContextMenuItem } from './lib/components/ContextMenu.svelte';
   import ShortcutsPanel from './lib/components/ShortcutsPanel.svelte';
+  import SettingsPanel from './lib/components/SettingsPanel.svelte';
 
   const notesService = new NotesService();
-  const foldersService = new FoldersService();
   const settingsService = new SettingsService();
   const hotkeyService = new HotkeyService();
   const databaseService = new DatabaseService();
@@ -23,14 +22,14 @@
   const DEFAULT_SIDEBAR_WIDTH = 260;
 
   let notes: NoteRecord[] = [];
-  let folders: FolderRecord[] = [];
   let selectedId: number | null = null;
-  let selectedFolderId: number | null = null;
-  let expandedFolders: Set<number> = new Set();
+  let activeParentId: number | null = null;
+  let expandedNotes: Set<number> = new Set();
   let focusedKey: string | null = null;
   let renamingKey: string | null = null;
   let contextMenu: { x: number; y: number; items: ContextMenuItem[] } | null = null;
   let shortcutsOpen = false;
+  let settingsOpen = false;
   let hotkeySetting = 'Alt+S';
   let sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
   let isResizingSidebar = false;
@@ -61,7 +60,7 @@
 
   const saveExpanded = () => {
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem(EXPANDED_KEY, JSON.stringify([...expandedFolders]));
+      window.localStorage.setItem(EXPANDED_KEY, JSON.stringify([...expandedNotes]));
     }
   };
 
@@ -101,33 +100,21 @@
 
   // ---------- tree construction ----------
 
-  const buildTree = (folderList: FolderRecord[], noteList: NoteRecord[]): TreeItem[] => {
-    const nodeById = new Map<number, TreeItem & { type: 'folder' }>();
-    folderList.forEach((f) => nodeById.set(f.id, { type: 'folder', id: f.id, name: f.name, children: [] }));
+  const buildTree = (noteList: NoteRecord[]): TreeItem[] => {
+    const nodeById = new Map<number, TreeItem>();
+    noteList.forEach((n) => nodeById.set(n.id, { id: n.id, title: n.title, children: [] }));
 
     const roots: TreeItem[] = [];
-    folderList.forEach((f) => {
-      const node = nodeById.get(f.id)!;
-      const parent = f.parentId != null ? nodeById.get(f.parentId) : undefined;
+    noteList.forEach((n) => {
+      const node = nodeById.get(n.id)!;
+      const parent = n.parentId != null ? nodeById.get(n.parentId) : undefined;
       if (parent) parent.children.push(node);
       else roots.push(node);
     });
 
-    noteList.forEach((n) => {
-      const noteNode: TreeItem = { type: 'note', id: n.id, title: n.title };
-      const parent = n.folderId != null ? nodeById.get(n.folderId) : undefined;
-      if (parent) parent.children.push(noteNode);
-      else roots.push(noteNode);
-    });
-
     const sortItems = (items: TreeItem[]) => {
-      items.sort((a, b) => {
-        if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
-        const an = a.type === 'folder' ? a.name : a.title;
-        const bn = b.type === 'folder' ? b.name : b.title;
-        return an.localeCompare(bn, undefined, { sensitivity: 'base' });
-      });
-      items.forEach((item) => item.type === 'folder' && sortItems(item.children));
+      items.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
+      items.forEach((item) => sortItems(item.children));
     };
     sortItems(roots);
     return roots;
@@ -137,41 +124,41 @@
     const out: { key: string; item: TreeItem }[] = [];
     const walk = (list: TreeItem[]) => {
       for (const item of list) {
-        const key = item.type === 'folder' ? `folder:${item.id}` : `note:${item.id}`;
+        const key = `note:${item.id}`;
         out.push({ key, item });
-        if (item.type === 'folder' && expanded.has(item.id)) walk(item.children);
+        if (item.children.length && expanded.has(item.id)) walk(item.children);
       }
     };
     walk(items);
     return out;
   };
 
-  const folderPath = (folder: FolderRecord): string => {
-    const parts: string[] = [folder.name];
-    let current: FolderRecord | undefined = folder;
+  const notePath = (note: NoteRecord): string => {
+    const parts: string[] = [note.title];
+    let current: NoteRecord | undefined = note;
     while (current && current.parentId != null) {
-      current = folders.find((f) => f.id === current!.parentId);
-      if (current) parts.unshift(current.name);
+      current = notes.find((n) => n.id === current!.parentId);
+      if (current) parts.unshift(current.title);
     }
     return parts.join(' / ');
   };
 
-  const collectDescendantIds = (rootId: number): Set<number> => {
+  const collectDescendantNoteIds = (rootId: number): Set<number> => {
     const ids = new Set<number>();
     const queue = [rootId];
     while (queue.length) {
       const current = queue.pop()!;
-      for (const f of folders) {
-        if (f.parentId === current && !ids.has(f.id)) {
-          ids.add(f.id);
-          queue.push(f.id);
+      for (const n of notes) {
+        if (n.parentId === current && !ids.has(n.id)) {
+          ids.add(n.id);
+          queue.push(n.id);
         }
       }
     }
     return ids;
   };
 
-  $: tree = buildTree(folders, notes);
+  $: tree = buildTree(notes);
   $: normalizedQuery = query.trim().toLowerCase();
   $: isSearching = normalizedQuery.length > 0;
   $: searchResults = isSearching
@@ -180,12 +167,12 @@
         .sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }))
     : [];
   $: visibleFlat = isSearching
-    ? searchResults.map((n) => ({ key: `note:${n.id}`, item: { type: 'note', id: n.id, title: n.title } as TreeItem }))
-    : flattenVisible(tree, expandedFolders);
+    ? searchResults.map((n) => ({ key: `note:${n.id}`, item: { id: n.id, title: n.title, children: [] } as TreeItem }))
+    : flattenVisible(tree, expandedNotes);
   $: if (visibleFlat.length && !visibleFlat.some((v) => v.key === focusedKey)) {
     focusedKey = visibleFlat[0].key;
   }
-  $: currentFolderName = selectedFolderId != null ? (folders.find((f) => f.id === selectedFolderId) ? folderPath(folders.find((f) => f.id === selectedFolderId)!) : 'Notes') : 'Notes';
+  $: currentPath = activeParentId != null ? (notes.find((n) => n.id === activeParentId) ? notePath(notes.find((n) => n.id === activeParentId)!) : 'Notes') : 'Notes';
   $: searchMatchIndex = isSearching ? searchResults.findIndex((n) => n.id === selectedId) : -1;
 
   // ---------- data loading ----------
@@ -194,12 +181,8 @@
     notes = await notesService.list();
   };
 
-  const refreshFolders = async () => {
-    folders = await foldersService.list();
-  };
-
   const refreshAll = async () => {
-    await Promise.all([refreshNotes(), refreshFolders()]);
+    await refreshNotes();
     status = 'Refreshed';
   };
 
@@ -213,7 +196,7 @@
 
   const selectNote = (note: NoteRecord, focusEditor = true) => {
     selectedId = note.id;
-    selectedFolderId = note.folderId;
+    activeParentId = note.parentId;
     title = note.title;
     noteText = note.content;
     titleAutoDerive = note.title === 'Untitled' || note.title.trim() === '';
@@ -302,11 +285,11 @@
 
   // ---------- creation ----------
 
-  const createNoteIn = async (folderId: number | null) => {
-    const created = await notesService.create({ title: 'Untitled', content: '', folderId });
+  const createNoteIn = async (parentId: number | null) => {
+    const created = await notesService.create({ title: 'Untitled', content: '', parentId });
     notes = [created, ...notes];
-    if (folderId != null && !expandedFolders.has(folderId)) {
-      expandedFolders = new Set(expandedFolders).add(folderId);
+    if (parentId != null && !expandedNotes.has(parentId)) {
+      expandedNotes = new Set(expandedNotes).add(parentId);
       saveExpanded();
     }
     selectNote(created);
@@ -322,33 +305,30 @@
       'Welcome to FlashPad',
       '',
       `Press ${hotkeySetting} anywhere to open FlashPad instantly.`,
-      "Press Esc to hide it - it keeps running in the tray.",
+      'Press Esc to hide it - it keeps running in the tray.',
       '',
-      'Right-click the sidebar to create notes and folders.',
+      'Right-click a note (or the sidebar background) to create a note,',
+      'rename, duplicate, move, or delete. Any note can hold subnotes -',
+      'once it has one, it shows a folder icon: click it to open its own',
+      'content, click the little arrow to expand or collapse its subnotes.',
+      '',
+      'Use the search box at the bottom to find notes, with prev/next',
+      'buttons (or Enter / Shift+Enter) to step through matches.',
       '',
       'Alt+1  Insert a divider',
       'Alt+2  Insert a timestamp',
       'Alt+3  Insert a dateline',
       '',
+      'The gear icon in Settings lets you launch FlashPad at login and',
+      'change the hotkey above to whatever you like.',
+      '',
       'Start typing to replace this note.',
     ].join('\n');
 
-    const created = await notesService.create({ title: 'Welcome to FlashPad', content, folderId: null });
+    const created = await notesService.create({ title: 'Welcome to FlashPad', content, parentId: null });
     notes = [created, ...notes];
     selectNote(created);
     focusedKey = `note:${created.id}`;
-  };
-
-  const createFolderIn = async (parentId: number | null) => {
-    const created = await foldersService.create('New folder', parentId);
-    folders = [...folders, created];
-    if (parentId != null && !expandedFolders.has(parentId)) {
-      expandedFolders = new Set(expandedFolders).add(parentId);
-      saveExpanded();
-    }
-    renamingKey = `folder:${created.id}`;
-    focusedKey = `folder:${created.id}`;
-    status = 'New folder';
   };
 
   // ---------- rename / move / delete / duplicate ----------
@@ -358,43 +338,31 @@
     const trimmed = value.trim();
     if (!trimmed) return;
 
-    if (key.startsWith('folder:')) {
-      const id = Number(key.slice('folder:'.length));
-      const updated = await foldersService.rename(id, trimmed);
-      folders = folders.map((f) => (f.id === id ? updated : f));
-    } else {
-      const id = Number(key.slice('note:'.length));
-      const updated = await notesService.save({ id, title: trimmed });
-      notes = notes.map((n) => (n.id === id ? updated : n));
-      if (selectedId === id) {
-        title = trimmed;
-        titleAutoDerive = false;
-      }
+    const id = Number(key.slice('note:'.length));
+    const updated = await notesService.save({ id, title: trimmed });
+    notes = notes.map((n) => (n.id === id ? updated : n));
+    if (selectedId === id) {
+      title = trimmed;
+      titleAutoDerive = false;
     }
   };
 
-  const buildMoveTargetItems = (onPick: (folderId: number | null) => void, excludeFolderId?: number): ContextMenuItem[] => {
-    const descendantIds = excludeFolderId != null ? collectDescendantIds(excludeFolderId) : new Set<number>();
-    const eligible = folders
-      .filter((f) => f.id !== excludeFolderId && !descendantIds.has(f.id))
-      .sort((a, b) => folderPath(a).localeCompare(folderPath(b), undefined, { sensitivity: 'base' }));
+  const buildMoveTargetItems = (onPick: (parentId: number | null) => void, excludeId?: number): ContextMenuItem[] => {
+    const descendantIds = excludeId != null ? collectDescendantNoteIds(excludeId) : new Set<number>();
+    const eligible = notes
+      .filter((n) => n.id !== excludeId && !descendantIds.has(n.id))
+      .sort((a, b) => notePath(a).localeCompare(notePath(b), undefined, { sensitivity: 'base' }));
     return [
       { label: 'Notes (root)', action: () => onPick(null) },
-      ...eligible.map((f) => ({ label: folderPath(f), action: () => onPick(f.id) })),
+      ...eligible.map((n) => ({ label: notePath(n), action: () => onPick(n.id) })),
     ];
   };
 
-  const moveNoteTo = async (id: number, folderId: number | null) => {
-    const updated = await notesService.move(id, folderId);
-    notes = notes.map((n) => (n.id === id ? updated : n));
-    if (selectedId === id) selectedFolderId = folderId;
-    status = 'Moved';
-  };
-
-  const moveFolderTo = async (id: number, parentId: number | null) => {
+  const moveNoteTo = async (id: number, parentId: number | null) => {
     try {
-      const updated = await foldersService.move(id, parentId);
-      folders = folders.map((f) => (f.id === id ? updated : f));
+      const updated = await notesService.move(id, parentId);
+      notes = notes.map((n) => (n.id === id ? updated : n));
+      if (selectedId === id) activeParentId = parentId;
       status = 'Moved';
     } catch (err) {
       status = err instanceof Error ? err.message : 'Move failed';
@@ -409,61 +377,43 @@
   };
 
   const deleteNoteById = async (id: number) => {
-    if (!confirm('Delete this note? This cannot be undone.')) return;
+    const descendantIds = collectDescendantNoteIds(id);
+    const removedIds = new Set([id, ...descendantIds]);
+    const message =
+      descendantIds.size > 0
+        ? `Delete this note and ${descendantIds.size} note${descendantIds.size === 1 ? '' : 's'} inside it? This cannot be undone.`
+        : 'Delete this note? This cannot be undone.';
+    if (!confirm(message)) return;
+
     await notesService.delete(id);
-    notes = notes.filter((n) => n.id !== id);
-    if (selectedId === id) {
+    notes = notes.filter((n) => !removedIds.has(n.id));
+    if (selectedId != null && removedIds.has(selectedId)) {
       selectedId = null;
       if (notes.length) {
         selectNote(notes[0]);
       } else {
         title = 'Untitled';
         noteText = '';
-        selectedFolderId = null;
+        activeParentId = null;
       }
+    }
+    if (activeParentId != null && removedIds.has(activeParentId)) {
+      activeParentId = null;
     }
     status = 'Deleted';
   };
 
-  const deleteFolder = async (id: number) => {
-    const descendantIds = collectDescendantIds(id);
-    const removedFolderIds = new Set([id, ...descendantIds]);
-    const affectedCount = notes.filter((n) => n.folderId != null && removedFolderIds.has(n.folderId)).length;
-    const message =
-      affectedCount > 0
-        ? `Delete this folder and ${affectedCount} note${affectedCount === 1 ? '' : 's'} inside it? This cannot be undone.`
-        : 'Delete this folder?';
-    if (!confirm(message)) return;
-
-    await foldersService.delete(id);
-    folders = folders.filter((f) => !removedFolderIds.has(f.id));
-    const deletedNoteIds = new Set(notes.filter((n) => n.folderId != null && removedFolderIds.has(n.folderId)).map((n) => n.id));
-    notes = notes.filter((n) => !deletedNoteIds.has(n.id));
-    if (selectedFolderId != null && removedFolderIds.has(selectedFolderId)) {
-      selectedFolderId = null;
-    }
-    if (selectedId != null && deletedNoteIds.has(selectedId)) {
-      selectedId = null;
-      if (notes.length) {
-        selectNote(notes[0]);
-      } else {
-        title = 'Untitled';
-        noteText = '';
-        selectedFolderId = null;
-      }
-    }
-    status = 'Folder deleted';
-  };
-
   // ---------- tree state ----------
 
-  const toggleFolder = (id: number) => {
-    const next = new Set(expandedFolders);
+  // Deliberately doesn't touch activeParentId: expanding/collapsing a note to
+  // browse its children shouldn't change where "New note" lands - that's
+  // driven only by whichever note you actually have open (see selectNote).
+  const toggleExpand = (id: number) => {
+    const next = new Set(expandedNotes);
     if (next.has(id)) next.delete(id);
     else next.add(id);
-    expandedFolders = next;
+    expandedNotes = next;
     saveExpanded();
-    selectedFolderId = id;
   };
 
   // ---------- context menus ----------
@@ -477,29 +427,13 @@
       x: event.clientX,
       y: event.clientY,
       items: [
-        { label: 'New folder', action: () => void createFolderIn(selectedFolderId) },
-        { label: 'New note', action: () => void createNoteIn(selectedFolderId) },
+        { label: 'New note', action: () => void createNoteIn(activeParentId) },
         { label: '', separator: true },
         { label: 'Refresh', action: () => void refreshAll() },
         { label: 'Collapse all', action: () => {
-            expandedFolders = new Set();
+            expandedNotes = new Set();
             saveExpanded();
           } },
-      ],
-    };
-  };
-
-  const openFolderMenu = (event: MouseEvent, folderId: number) => {
-    contextMenu = {
-      x: event.clientX,
-      y: event.clientY,
-      items: [
-        { label: 'New note inside folder', action: () => void createNoteIn(folderId) },
-        { label: 'New subfolder', action: () => void createFolderIn(folderId) },
-        { label: 'Rename', action: () => (renamingKey = `folder:${folderId}`) },
-        { label: 'Move', submenu: buildMoveTargetItems((target) => void moveFolderTo(folderId, target), folderId) },
-        { label: '', separator: true },
-        { label: 'Delete', danger: true, action: () => void deleteFolder(folderId) },
       ],
     };
   };
@@ -510,9 +444,10 @@
       y: event.clientY,
       items: [
         { label: 'Open', action: () => void openNote(noteId, true) },
+        { label: 'New subnote', action: () => void createNoteIn(noteId) },
         { label: 'Rename', action: () => (renamingKey = `note:${noteId}`) },
         { label: 'Duplicate', action: () => void duplicateNote(noteId) },
-        { label: 'Move to folder', submenu: buildMoveTargetItems((target) => void moveNoteTo(noteId, target)) },
+        { label: 'Move to…', submenu: buildMoveTargetItems((target) => void moveNoteTo(noteId, target), noteId) },
         { label: '', separator: true },
         { label: 'Delete', danger: true, action: () => void deleteNoteById(noteId) },
       ],
@@ -520,13 +455,12 @@
   };
 
   $: treeNodeProps = {
-    expandedFolders,
+    expandedNotes,
     selectedNoteId: selectedId,
     focusedKey,
     renamingKey,
-    onToggleFolder: toggleFolder,
+    onToggleExpand: toggleExpand,
     onSelectNote: (id: number) => void openNote(id),
-    onFolderContextMenu: openFolderMenu,
     onNoteContextMenu: openNoteMenu,
     onFocusItem: (key: string) => {
       focusedKey = key;
@@ -552,15 +486,15 @@
       focusedKey = visibleFlat[prevIndex]?.key ?? visibleFlat[0].key;
     } else if (event.key === 'ArrowRight' && !isSearching) {
       const entry = visibleFlat[currentIndex];
-      if (entry?.item.type === 'folder' && !expandedFolders.has(entry.item.id)) {
+      if (entry?.item.children.length && !expandedNotes.has(entry.item.id)) {
         event.preventDefault();
-        toggleFolder(entry.item.id);
+        toggleExpand(entry.item.id);
       }
     } else if (event.key === 'ArrowLeft' && !isSearching) {
       const entry = visibleFlat[currentIndex];
-      if (entry?.item.type === 'folder' && expandedFolders.has(entry.item.id)) {
+      if (entry?.item.children.length && expandedNotes.has(entry.item.id)) {
         event.preventDefault();
-        toggleFolder(entry.item.id);
+        toggleExpand(entry.item.id);
       }
     } else if (event.key === 'Enter') {
       event.preventDefault();
@@ -570,10 +504,9 @@
       }
       const entry = visibleFlat[currentIndex];
       if (entry) {
-        if (entry.item.type === 'note') {
-          void openNote(entry.item.id, true);
-        } else {
-          toggleFolder(entry.item.id);
+        void openNote(entry.item.id, true);
+        if (entry.item.children.length) {
+          toggleExpand(entry.item.id);
         }
       }
     }
@@ -606,8 +539,10 @@
       x: rect.left,
       y: rect.bottom + 4,
       items: [
-        { label: 'New note', action: () => void createNoteIn(selectedFolderId) },
-        { label: 'New folder', action: () => void createFolderIn(selectedFolderId) },
+        { label: 'New note', action: () => void createNoteIn(activeParentId) },
+        { label: 'New subnote', disabled: selectedId == null, action: () => {
+            if (selectedId != null) void createNoteIn(selectedId);
+          } },
         { label: '', separator: true },
         { label: 'Delete', danger: true, action: () => {
             if (selectedId != null) void deleteNoteById(selectedId);
@@ -633,7 +568,7 @@
     }
 
     if (event.key === 'Escape') {
-      if (contextMenu || shortcutsOpen) return;
+      if (contextMenu || shortcutsOpen || settingsOpen) return;
       event.preventDefault();
       void invoke('hide_window').catch(() => {
         status = 'Window hidden';
@@ -642,15 +577,14 @@
   };
 
   onMount(async () => {
-    expandedFolders = loadExpanded();
+    expandedNotes = loadExpanded();
     sidebarWidth = loadSidebarWidth();
     try {
       await databaseService.init();
       const settings = await settingsService.load();
       theme = settings.theme;
-      hotkeySetting = settings.hotkey;
       document.documentElement.dataset.theme = theme;
-      await hotkeyService.register(settings.hotkey);
+      hotkeySetting = await hotkeyService.get();
       await refreshAll();
       if (notes.length) {
         selectNote(notes[0]);
@@ -701,6 +635,14 @@
       </svg>
       <span>Shortcuts</span>
     </button>
+
+    <button class="toolbar-btn" on:click={() => (settingsOpen = true)} aria-label="Settings">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="8" cy="8" r="2.2" />
+        <path d="M8 2v1.6M8 12.4V14M14 8h-1.6M3.6 8H2M12.13 3.87l-1.13 1.13M4.99 11.01l-1.13 1.13M12.13 12.13l-1.13-1.13M4.99 4.99 3.87 3.87" />
+      </svg>
+      <span>Settings</span>
+    </button>
   </div>
 
   <div class="shell">
@@ -719,17 +661,17 @@
     >
       {#if isSearching}
         {#each searchResults as note (note.id)}
-          <TreeNode item={{ type: 'note', id: note.id, title: note.title }} depth={0} {...treeNodeProps} />
+          <TreeNode item={{ id: note.id, title: note.title, children: [] }} depth={0} {...treeNodeProps} />
         {/each}
         {#if !searchResults.length}
           <p class="empty-hint">No matches</p>
         {/if}
       {:else}
-        {#each tree as item (item.type + ':' + item.id)}
+        {#each tree as item (item.id)}
           <TreeNode {item} depth={0} {...treeNodeProps} />
         {/each}
         {#if !tree.length}
-          <p class="empty-hint">Right-click to create a folder or note</p>
+          <p class="empty-hint">Right-click to create a note</p>
         {/if}
         <div class="tree-spacer"></div>
       {/if}
@@ -760,7 +702,7 @@
     <header class="topbar">
       <div class="title-block">
         <input bind:value={title} class="title" placeholder="Untitled" on:input={handleTitleInput} />
-        <span class="breadcrumb">{currentFolderName}</span>
+        <span class="breadcrumb">{currentPath}</span>
       </div>
     </header>
 
@@ -811,6 +753,14 @@
 
 {#if shortcutsOpen}
   <ShortcutsPanel hotkey={hotkeySetting} onClose={() => (shortcutsOpen = false)} />
+{/if}
+
+{#if settingsOpen}
+  <SettingsPanel
+    hotkey={hotkeySetting}
+    onHotkeyChange={(next) => (hotkeySetting = next)}
+    onClose={() => (settingsOpen = false)}
+  />
 {/if}
 
 <style>

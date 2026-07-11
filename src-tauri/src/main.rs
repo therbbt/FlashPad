@@ -1,20 +1,77 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod db;
-mod folders;
 mod notes;
 
 use db::DbState;
+use std::path::Path;
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{command, Manager, WindowEvent};
-use tauri_plugin_global_shortcut::ShortcutState;
+use tauri::{command, AppHandle, Manager, State, WindowEvent};
+use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
-/// Global hotkey default. Kept in sync manually with DEFAULT_HOTKEY in
-/// src/lib/services/settingsService.ts until a settings UI exists to change
-/// it at runtime (which would need a Rust command to unregister/re-register).
-const GLOBAL_HOTKEY: &str = "Alt+S";
+/// Passed as a launch arg when the OS starts FlashPad automatically at login
+/// (see the autostart plugin registration below), so `setup()` knows to keep
+/// the window hidden in the tray instead of popping up on every login.
+const HIDDEN_LAUNCH_FLAG: &str = "--hidden";
+
+/// Fallback hotkey used until the user picks one in Settings.
+const DEFAULT_HOTKEY: &str = "Alt+S";
+
+/// Holds the file name (not path - joined with the app data dir at each use)
+/// for persisting the user's chosen hotkey. Plain text, just the accelerator
+/// string, since it's a single value - read in `setup()` so the hotkey is
+/// registered natively before the frontend even loads.
+const HOTKEY_FILE: &str = "hotkey.txt";
+
+/// Tracks whichever hotkey is currently registered with the OS, so
+/// `set_hotkey` knows what to unregister before registering a new one.
+struct HotkeyState(Mutex<String>);
+
+fn hotkey_file_path(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join(HOTKEY_FILE)
+}
+
+fn load_hotkey(data_dir: &Path) -> String {
+    std::fs::read_to_string(hotkey_file_path(data_dir))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_HOTKEY.to_string())
+}
+
+#[command]
+fn get_hotkey(state: State<HotkeyState>) -> String {
+    state.0.lock().unwrap().clone()
+}
+
+#[command]
+fn set_hotkey(app: AppHandle, state: State<HotkeyState>, hotkey: String) -> Result<(), String> {
+    let trimmed = hotkey.trim();
+    if trimmed.is_empty() {
+        return Err("Hotkey cannot be empty".into());
+    }
+
+    let mut current = state.0.lock().map_err(|e| e.to_string())?;
+    let shortcuts = app.global_shortcut();
+
+    let _ = shortcuts.unregister(current.as_str());
+    if let Err(err) = shortcuts.register(trimmed) {
+        // Best-effort: put the old one back so the app isn't left without a
+        // working hotkey.
+        let _ = shortcuts.register(current.as_str());
+        return Err(err.to_string());
+    }
+
+    *current = trimmed.to_string();
+
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::write(hotkey_file_path(&data_dir), trimmed).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
 
 #[command]
 fn hide_window(window: tauri::Window) {
@@ -49,10 +106,12 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec![HIDDEN_LAUNCH_FLAG.into()]),
+        ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcut(GLOBAL_HOTKEY)
-                .expect("invalid global hotkey definition")
                 .with_handler(|app, _shortcut, event| {
                     if event.state() == ShortcutState::Pressed {
                         toggle_main_window(app);
@@ -62,17 +121,14 @@ fn main() {
         )
         .invoke_handler(tauri::generate_handler![
             hide_window,
+            get_hotkey,
+            set_hotkey,
             notes::list_notes,
             notes::create_note,
             notes::update_note,
             notes::delete_note,
             notes::move_note,
             notes::duplicate_note,
-            folders::list_folders,
-            folders::create_folder,
-            folders::rename_folder,
-            folders::move_folder,
-            folders::delete_folder,
         ])
         .setup(|app| {
             let data_dir = app
@@ -81,6 +137,12 @@ fn main() {
                 .expect("failed to resolve app data dir");
             let conn = db::init(data_dir.join("flashpad.sqlite3"));
             app.manage(DbState(Mutex::new(conn)));
+
+            let initial_hotkey = load_hotkey(&data_dir);
+            app.global_shortcut()
+                .register(initial_hotkey.as_str())
+                .expect("failed to register initial hotkey");
+            app.manage(HotkeyState(Mutex::new(initial_hotkey)));
 
             let open_item = MenuItem::with_id(app, "open", "Open FlashPad", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -115,6 +177,10 @@ fn main() {
                         let _ = window_clone.hide();
                     }
                 });
+
+                if std::env::args().any(|arg| arg == HIDDEN_LAUNCH_FLAG) {
+                    let _ = window.hide();
+                }
             }
 
             Ok(())

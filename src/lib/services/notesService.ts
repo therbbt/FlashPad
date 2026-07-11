@@ -4,7 +4,7 @@ export interface NoteRecord {
   id: number;
   title: string;
   content: string;
-  folderId: number | null;
+  parentId: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -33,13 +33,13 @@ export class NotesService {
     return await invoke<NoteRecord[]>('list_notes');
   }
 
-  async create(payload: { title?: string; content?: string; folderId?: number | null } = {}): Promise<NoteRecord> {
+  async create(payload: { title?: string; content?: string; parentId?: number | null } = {}): Promise<NoteRecord> {
     if (!isTauriRuntime()) {
       const note: NoteRecord = {
         id: Date.now(),
         title: payload.title ?? 'Untitled',
         content: payload.content ?? '',
-        folderId: payload.folderId ?? null,
+        parentId: payload.parentId ?? null,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -48,7 +48,7 @@ export class NotesService {
       return note;
     }
     return await invoke<NoteRecord>('create_note', {
-      note: { title: payload.title, content: payload.content, folderId: payload.folderId ?? null },
+      note: { title: payload.title, content: payload.content, parentId: payload.parentId ?? null },
     });
   }
 
@@ -69,13 +69,13 @@ export class NotesService {
     await invoke('delete_note', { id });
   }
 
-  async move(id: number, folderId: number | null): Promise<NoteRecord> {
+  async move(id: number, parentId: number | null): Promise<NoteRecord> {
     if (!isTauriRuntime()) {
-      const notes = readFallback().map((item) => (item.id === id ? { ...item, folderId, updatedAt: new Date().toISOString() } : item));
+      const notes = readFallback().map((item) => (item.id === id ? { ...item, parentId, updatedAt: new Date().toISOString() } : item));
       writeFallback(notes);
       return notes.find((item) => item.id === id) as NoteRecord;
     }
-    return await invoke<NoteRecord>('move_note', { id, folderId });
+    return await invoke<NoteRecord>('move_note', { id, parentId });
   }
 
   async duplicate(id: number): Promise<NoteRecord> {

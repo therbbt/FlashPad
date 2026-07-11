@@ -9,7 +9,7 @@ pub struct Note {
     pub id: i64,
     pub title: String,
     pub content: String,
-    pub folder_id: Option<i64>,
+    pub parent_id: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -19,7 +19,7 @@ pub struct Note {
 pub struct NoteInput {
     pub title: Option<String>,
     pub content: Option<String>,
-    pub folder_id: Option<i64>,
+    pub parent_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,14 +29,14 @@ pub struct NoteUpdate {
     pub content: Option<String>,
 }
 
-const SELECT_COLUMNS: &str = "id, title, content, folder_id, created_at, updated_at";
+const SELECT_COLUMNS: &str = "id, title, content, parent_id, created_at, updated_at";
 
 fn row_to_note(row: &Row) -> rusqlite::Result<Note> {
     Ok(Note {
         id: row.get(0)?,
         title: row.get(1)?,
         content: row.get(2)?,
-        folder_id: row.get(3)?,
+        parent_id: row.get(3)?,
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
     })
@@ -79,8 +79,8 @@ pub fn create_note(db: State<DbState>, note: NoteInput) -> Result<Note, String> 
     let content = note.content.unwrap_or_default();
 
     conn.execute(
-        "INSERT INTO notes (title, content, folder_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
-        params![title, content, note.folder_id, now],
+        "INSERT INTO notes (title, content, parent_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+        params![title, content, note.parent_id, now],
     )
     .map_err(|e| e.to_string())?;
 
@@ -114,13 +114,33 @@ pub fn delete_note(db: State<DbState>, id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn move_note(db: State<DbState>, id: i64, folder_id: Option<i64>) -> Result<Note, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let now = now_iso();
+pub fn move_note(db: State<DbState>, id: i64, parent_id: Option<i64>) -> Result<Note, String> {
+    if parent_id == Some(id) {
+        return Err("A note cannot be moved into itself".into());
+    }
 
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+
+    if let Some(target) = parent_id {
+        let mut cursor = Some(target);
+        while let Some(current) = cursor {
+            if current == id {
+                return Err("Cannot move a note into one of its own subnotes".into());
+            }
+            cursor = conn
+                .query_row(
+                    "SELECT parent_id FROM notes WHERE id = ?1",
+                    params![current],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    let now = now_iso();
     conn.execute(
-        "UPDATE notes SET folder_id = ?1, updated_at = ?2 WHERE id = ?3",
-        params![folder_id, now, id],
+        "UPDATE notes SET parent_id = ?1, updated_at = ?2 WHERE id = ?3",
+        params![parent_id, now, id],
     )
     .map_err(|e| e.to_string())?;
 
@@ -135,8 +155,8 @@ pub fn duplicate_note(db: State<DbState>, id: i64) -> Result<Note, String> {
     let title = format!("{} (copy)", source.title);
 
     conn.execute(
-        "INSERT INTO notes (title, content, folder_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
-        params![title, source.content, source.folder_id, now],
+        "INSERT INTO notes (title, content, parent_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+        params![title, source.content, source.parent_id, now],
     )
     .map_err(|e| e.to_string())?;
 
@@ -148,14 +168,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn note_input_deserializes_camel_case_folder_id() {
-        let input: NoteInput = serde_json::from_str(r#"{"title":"Hi","content":"","folderId":42}"#).unwrap();
-        assert_eq!(input.folder_id, Some(42));
+    fn note_input_deserializes_camel_case_parent_id() {
+        let input: NoteInput = serde_json::from_str(r#"{"title":"Hi","content":"","parentId":42}"#).unwrap();
+        assert_eq!(input.parent_id, Some(42));
     }
 
     #[test]
-    fn note_input_defaults_folder_id_to_root_when_omitted() {
+    fn note_input_defaults_parent_id_to_root_when_omitted() {
         let input: NoteInput = serde_json::from_str(r#"{"title":"Hi","content":""}"#).unwrap();
-        assert_eq!(input.folder_id, None);
+        assert_eq!(input.parent_id, None);
     }
 }

@@ -11,9 +11,9 @@
     ['Alt+1', 'Insert a divider line'],
     ['Alt+2', 'Insert a timestamp'],
     ['Alt+3', 'Insert a dateline'],
-    ['Enter', 'Open the focused note, or expand/collapse a folder'],
+    ['Enter', "Open the focused note, toggling its subnotes if it has any"],
     ['↑ / ↓', 'Move through the tree or search results'],
-    ['← / →', 'Collapse / expand the focused folder'],
+    ['← / →', "Collapse / expand the focused note's subnotes"],
     ['Right-click', 'Open the context menu (new, rename, move, delete, duplicate)'],
     ['Enter / Esc', 'While renaming: confirm / cancel'],
   ];

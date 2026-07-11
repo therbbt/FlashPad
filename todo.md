@@ -4,8 +4,6 @@
 
 * we should be able to toggle between md format and normal format. 
 
-* make subnotes insted of folders and subfolders. when there is a parent folder it should get a folder icon insted. but folder should have a note inside them at toplevel. Just like flashnote
-
 * customizeble hot keys, bind your own hot keys
 
 * export/import database
