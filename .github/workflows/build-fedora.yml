@@ -36,19 +36,22 @@ jobs:
         run: npm install
 
       - name: Build FlashPad
-        # linuxdeploy (used for the AppImage bundle) is itself distributed as
-        # an AppImage, which normally mounts itself via FUSE - unavailable in
-        # this unprivileged container. This tells it to extract itself and
-        # run from disk instead.
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: npm run tauri build
+        # AppImage bundling needs linuxdeploy (and its plugins), which are
+        # themselves distributed as AppImages that mount via FUSE - and
+        # setting APPIMAGE_EXTRACT_AND_RUN=1 to avoid that FUSE mount still
+        # wasn't enough in this unprivileged container (likely /tmp being
+        # noexec, or another sandboxing restriction blocking any extracted
+        # binary from running at all). Since this workflow targets Fedora
+        # specifically, the .rpm is what actually matters - skip the
+        # appimage bundle entirely rather than continuing to fight
+        # linuxdeploy's environment requirements here.
+        run: npm run tauri build -- --bundles deb,rpm
 
       - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
           name: FlashPad-fedora
           path: |
+            src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/rpm/*.rpm
-            src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
