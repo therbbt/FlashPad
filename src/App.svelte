@@ -1046,7 +1046,7 @@
     /* Shared by .app-shell and every overlay/modal's backdrop, so the
        transparent window margin that makes the drop shadow visible against
        the desktop never gets painted over by a full-bleed backdrop. */
-    --window-shadow-margin: 2px;
+    --window-shadow-margin: 1px;
   }
 
   .app-shell {
