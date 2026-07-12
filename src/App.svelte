@@ -777,6 +777,14 @@
     } catch (err) {
       console.error('FlashPad failed to initialize', err);
       status = err instanceof Error ? err.message : 'Startup error';
+    } finally {
+      // Window starts invisible (tauri.conf.json) specifically so nothing
+      // shows before this point - the double rAF waits for the browser to
+      // have actually painted the just-loaded content (size/theme/notes),
+      // rather than revealing a still-empty frame that then jumps to the
+      // real layout. Runs even on init failure so the app isn't stuck
+      // invisible if something above threw.
+      requestAnimationFrame(() => requestAnimationFrame(() => void invoke('frontend_ready').catch(() => {})));
     }
     window.addEventListener('keydown', handleKeydown);
     return () => window.removeEventListener('keydown', handleKeydown);

@@ -7,9 +7,14 @@ use db::DbState;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{command, AppHandle, Manager, State, WindowEvent};
+
+/// A dedicated rendering of the app mark for the tray, loaded explicitly
+/// instead of reusing `app.default_window_icon()`.
+const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
@@ -83,7 +88,15 @@ fn set_hotkey(app: AppHandle, state: State<HotkeyState>, hotkey: String) -> Resu
 /// XWayland (forced on Linux to fix the custom title bar, see GDK_BACKEND
 /// below), which made the hotkey need an extra press to actually show the
 /// window again after hiding it.
-static WINDOW_SHOWN: AtomicBool = AtomicBool::new(true);
+///
+/// Starts `false` to match `visible: false` in tauri.conf.json - the window
+/// is only ever actually shown once `frontend_ready` fires (see below).
+static WINDOW_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// Set once in `setup()` from the `--hidden` launch arg, so `frontend_ready`
+/// knows whether this launch should stay backgrounded (autostart-at-login)
+/// instead of popping the window up as soon as the frontend has rendered.
+static LAUNCHED_HIDDEN: AtomicBool = AtomicBool::new(false);
 
 fn hide_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -103,6 +116,20 @@ fn show_main_window(app: &tauri::AppHandle) {
 #[command]
 fn hide_window(app: AppHandle) {
     hide_main_window(&app);
+}
+
+/// Called by the frontend once its initial render is actually ready to be
+/// seen (data loaded, note selected/created, first paint done) - the window
+/// is created invisible (`visible: false` in tauri.conf.json) specifically
+/// so nothing is shown before this point. Showing eagerly at window-creation
+/// time, before the webview had rendered anything, was causing a startup
+/// flash of a blank/black window that then jumped to its restored
+/// size/position and finally to the real UI once content painted.
+#[command]
+fn frontend_ready(app: AppHandle) {
+    if !LAUNCHED_HIDDEN.load(Ordering::SeqCst) {
+        show_main_window(&app);
+    }
 }
 
 /// Runs entirely in Rust so the hotkey works instantly even while the
@@ -136,13 +163,17 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(
-            // Excludes DECORATIONS: otherwise this plugin persists the
-            // window's decorated state across restarts and re-applies it on
-            // every launch, silently overriding `decorations: false` in
-            // tauri.conf.json with whatever was saved before that setting
-            // existed.
+            // Excludes DECORATIONS (see above) and VISIBLE: visibility is
+            // entirely our own responsibility now (`frontend_ready`/
+            // `LAUNCHED_HIDDEN` below) so the window stays invisible until
+            // the frontend has actually rendered, rather than the plugin
+            // restoring whatever visibility happened to be saved last time.
             tauri_plugin_window_state::Builder::default()
-                .with_state_flags(tauri_plugin_window_state::StateFlags::all() & !tauri_plugin_window_state::StateFlags::DECORATIONS)
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        & !tauri_plugin_window_state::StateFlags::DECORATIONS
+                        & !tauri_plugin_window_state::StateFlags::VISIBLE,
+                )
                 .build(),
         )
         .plugin(tauri_plugin_autostart::init(
@@ -160,6 +191,7 @@ fn main() {
         )
         .invoke_handler(tauri::generate_handler![
             hide_window,
+            frontend_ready,
             get_hotkey,
             set_hotkey,
             notes::list_notes,
@@ -188,8 +220,10 @@ fn main() {
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[&open_item, &quit_item])?;
 
+            let tray_icon = Image::from_bytes(TRAY_ICON_BYTES).expect("failed to decode tray icon");
+
             TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(tray_icon)
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
@@ -209,6 +243,11 @@ fn main() {
                 })
                 .build(app)?;
 
+            LAUNCHED_HIDDEN.store(
+                std::env::args().any(|arg| arg == HIDDEN_LAUNCH_FLAG),
+                Ordering::SeqCst,
+            );
+
             if let Some(window) = app.get_webview_window("main") {
                 let app_handle = app.handle().clone();
                 window.on_window_event(move |event| {
@@ -217,11 +256,6 @@ fn main() {
                         hide_main_window(&app_handle);
                     }
                 });
-
-                if std::env::args().any(|arg| arg == HIDDEN_LAUNCH_FLAG) {
-                    let _ = window.hide();
-                    WINDOW_SHOWN.store(false, Ordering::SeqCst);
-                }
             }
 
             Ok(())

@@ -1,9 +1,0 @@
-FlashPad
-
-FlashPad är ett skrivbordsprogram för att snabbt fånga anteckningar och tankar innan man glömmer bort dem.
-
-Programmet ligger i bakgrunden och kan öppnas direkt med en global snabbtangent (standard Alt+S), så man kan skriva ner något på ett par sekunder utan att behöva leta upp programmet. Anteckningar kan organiseras i ett träd med undernoteringar, kan låsas för att skydda innehållet, sökas igenom, och dras och släpps för att byta ordning eller flyttas till en annan anteckning.
-
-Varje anteckning kan även slå på Markdown-läge, där texten formateras automatiskt medan man skriver - till exempel blir "# " direkt till en rubrik och "**text**" direkt fetstilt, utan att man behöver växla till ett separat förhandsgranskningsläge.
-
-Bygg med Tauri (Rust) för skrivbordsdelen och Svelte för gränssnittet, med SQLite som lagring av anteckningarna.
