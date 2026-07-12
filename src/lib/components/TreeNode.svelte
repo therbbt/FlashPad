@@ -6,7 +6,10 @@
     isMarkdown: boolean;
     isLocked: boolean;
     createdAt: string;
+    sortOrder: number;
   }
+
+  export type DropZone = 'before' | 'inside' | 'after';
 
   export let item: TreeItem;
   export let depth: number;
@@ -15,14 +18,44 @@
   export let focusedKey: string | null;
   export let renamingKey: string | null;
   export let cutId: number | null = null;
+  export let draggingId: number | null = null;
+  export let dropDisabledIds: Set<number> = new Set();
   export let onToggleExpand: (id: number) => void;
   export let onSelectNote: (id: number) => void;
   export let onNoteContextMenu: (event: MouseEvent, noteId: number) => void;
   export let onFocusItem: (key: string) => void;
   export let onRenameCommit: (key: string, value: string) => void;
   export let onRenameCancel: () => void;
+  export let onDragStartRow: (id: number) => void;
+  export let onDragEndRow: () => void;
+  export let onDropRow: (draggedId: number, targetId: number, zone: DropZone) => void;
 
   let renameCommitted = false;
+  let dropZone: DropZone | null = null;
+
+  $: isDropDisabled = dropDisabledIds.has(item.id);
+
+  const handleDragOver = (event: DragEvent) => {
+    if (isDropDisabled) return;
+    event.preventDefault();
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const ratio = (event.clientY - rect.top) / rect.height;
+    dropZone = ratio < 0.25 ? 'before' : ratio > 0.75 ? 'after' : 'inside';
+  };
+
+  const handleDragLeave = () => {
+    dropZone = null;
+  };
+
+  const handleDrop = (event: DragEvent) => {
+    event.preventDefault();
+    const zone = dropZone;
+    dropZone = null;
+    if (!zone || isDropDisabled) return;
+    const draggedId = Number(event.dataTransfer?.getData('text/plain'));
+    if (!Number.isFinite(draggedId)) return;
+    onDropRow(draggedId, item.id, zone);
+  };
 
   $: hasChildren = item.children.length > 0;
   $: isExpanded = hasChildren && expandedNotes.has(item.id);
@@ -48,7 +81,12 @@
   class:selected={selectedNoteId === item.id}
   class:focused={isFocused}
   class:cut={cutId === item.id}
+  class:dragging={draggingId === item.id}
+  class:drop-before={dropZone === 'before'}
+  class:drop-inside={dropZone === 'inside'}
+  class:drop-after={dropZone === 'after'}
   style="padding-left: {depth * 14 + (hasChildren ? 4 : 20)}px"
+  draggable="true"
   on:click={() => {
     onFocusItem(key);
     onSelectNote(item.id);
@@ -66,6 +104,14 @@
       if (hasChildren) onToggleExpand(item.id);
     }
   }}
+  on:dragstart={(e) => {
+    e.dataTransfer?.setData('text/plain', String(item.id));
+    onDragStartRow(item.id);
+  }}
+  on:dragend={onDragEndRow}
+  on:dragover={handleDragOver}
+  on:dragleave={handleDragLeave}
+  on:drop={handleDrop}
   role="treeitem"
   aria-expanded={hasChildren ? isExpanded : undefined}
   aria-selected={selectedNoteId === item.id}
@@ -148,12 +194,17 @@
       {focusedKey}
       {renamingKey}
       {cutId}
+      {draggingId}
+      {dropDisabledIds}
       {onToggleExpand}
       {onSelectNote}
       {onNoteContextMenu}
       {onFocusItem}
       {onRenameCommit}
       {onRenameCancel}
+      {onDragStartRow}
+      {onDragEndRow}
+      {onDropRow}
     />
   {/each}
 {/if}
@@ -187,6 +238,24 @@
 
   .row.cut {
     opacity: 0.5;
+  }
+
+  .row.dragging {
+    opacity: 0.5;
+  }
+
+  .row.drop-before {
+    box-shadow: inset 0 2px 0 0 var(--accent);
+  }
+
+  .row.drop-after {
+    box-shadow: inset 0 -2px 0 0 var(--accent);
+  }
+
+  .row.drop-inside {
+    background: var(--panel-2);
+    outline: 1px dashed var(--accent);
+    outline-offset: -1px;
   }
 
   .chevron-btn {

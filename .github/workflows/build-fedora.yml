@@ -36,6 +36,12 @@ jobs:
         run: npm install
 
       - name: Build FlashPad
+        # linuxdeploy (used for the AppImage bundle) is itself distributed as
+        # an AppImage, which normally mounts itself via FUSE - unavailable in
+        # this unprivileged container. This tells it to extract itself and
+        # run from disk instead.
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         run: npm run tauri build
 
       - name: Upload packages

@@ -14,6 +14,7 @@ pub struct Note {
     pub updated_at: String,
     pub is_markdown: bool,
     pub is_locked: bool,
+    pub sort_order: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,7 +37,7 @@ pub struct NoteUpdate {
     pub is_locked: Option<bool>,
 }
 
-const SELECT_COLUMNS: &str = "id, title, content, parent_id, created_at, updated_at, is_markdown, is_locked";
+const SELECT_COLUMNS: &str = "id, title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order";
 
 fn row_to_note(row: &Row) -> rusqlite::Result<Note> {
     Ok(Note {
@@ -48,7 +49,42 @@ fn row_to_note(row: &Row) -> rusqlite::Result<Note> {
         updated_at: row.get(5)?,
         is_markdown: row.get(6)?,
         is_locked: row.get(7)?,
+        sort_order: row.get(8)?,
     })
+}
+
+fn next_sort_order(conn: &rusqlite::Connection, parent_id: Option<i64>) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM notes WHERE parent_id IS ?1",
+        params![parent_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Shared by `move_note` and `reorder_note`: walks the parent chain from
+/// `parent_id` back up to the root, rejecting a move that would place `id`
+/// inside itself or one of its own descendants.
+fn check_no_cycle(conn: &rusqlite::Connection, id: i64, parent_id: Option<i64>) -> Result<(), String> {
+    if parent_id == Some(id) {
+        return Err("A note cannot be moved into itself".into());
+    }
+    if let Some(target) = parent_id {
+        let mut cursor = Some(target);
+        while let Some(current) = cursor {
+            if current == id {
+                return Err("Cannot move a note into one of its own subnotes".into());
+            }
+            cursor = conn
+                .query_row(
+                    "SELECT parent_id FROM notes WHERE id = ?1",
+                    params![current],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn now_iso() -> String {
@@ -88,10 +124,11 @@ pub fn create_note(db: State<DbState>, note: NoteInput) -> Result<Note, String> 
     let content = note.content.unwrap_or_default();
     let is_markdown = note.is_markdown.unwrap_or(false);
     let is_locked = note.is_locked.unwrap_or(false);
+    let sort_order = next_sort_order(&conn, note.parent_id)?;
 
     conn.execute(
-        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown, is_locked) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6)",
-        params![title, content, note.parent_id, now, is_markdown, is_locked],
+        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7)",
+        params![title, content, note.parent_id, now, is_markdown, is_locked, sort_order],
     )
     .map_err(|e| e.to_string())?;
 
@@ -141,34 +178,62 @@ pub fn delete_note(db: State<DbState>, id: i64) -> Result<(), String> {
 
 #[tauri::command]
 pub fn move_note(db: State<DbState>, id: i64, parent_id: Option<i64>) -> Result<Note, String> {
-    if parent_id == Some(id) {
-        return Err("A note cannot be moved into itself".into());
-    }
-
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-
-    if let Some(target) = parent_id {
-        let mut cursor = Some(target);
-        while let Some(current) = cursor {
-            if current == id {
-                return Err("Cannot move a note into one of its own subnotes".into());
-            }
-            cursor = conn
-                .query_row(
-                    "SELECT parent_id FROM notes WHERE id = ?1",
-                    params![current],
-                    |row| row.get::<_, Option<i64>>(0),
-                )
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    check_no_cycle(&conn, id, parent_id)?;
 
     let now = now_iso();
+    let sort_order = next_sort_order(&conn, parent_id)?;
     conn.execute(
-        "UPDATE notes SET parent_id = ?1, updated_at = ?2 WHERE id = ?3",
-        params![parent_id, now, id],
+        "UPDATE notes SET parent_id = ?1, updated_at = ?2, sort_order = ?3 WHERE id = ?4",
+        params![parent_id, now, sort_order, id],
     )
     .map_err(|e| e.to_string())?;
+
+    find_note(&conn, id)
+}
+
+/// Repositions `id` among the children of `parent_id`, immediately before
+/// `before_id` (or at the end if `before_id` is `None` or not currently a
+/// child of `parent_id`). Renumbers the whole resulting sibling list so
+/// ordering stays a plain dense sequence, avoiding fractional-index
+/// precision issues. Used by the sidebar's drag-and-drop tree reordering.
+#[tauri::command]
+pub fn reorder_note(db: State<DbState>, id: i64, parent_id: Option<i64>, before_id: Option<i64>) -> Result<Note, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    check_no_cycle(&conn, id, parent_id)?;
+
+    let mut stmt = conn
+        .prepare("SELECT id FROM notes WHERE parent_id IS ?1 AND id != ?2 ORDER BY sort_order, id")
+        .map_err(|e| e.to_string())?;
+    let mut siblings: Vec<i64> = stmt
+        .query_map(params![parent_id, id], |row| row.get::<_, i64>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .collect();
+    drop(stmt);
+
+    let insert_at = before_id
+        .and_then(|b| siblings.iter().position(|&sid| sid == b))
+        .unwrap_or(siblings.len());
+    siblings.insert(insert_at, id);
+
+    let now = now_iso();
+    for (index, sibling_id) in siblings.iter().enumerate() {
+        if *sibling_id == id {
+            // Only the dragged note's own parent/updated_at actually changes;
+            // untouched siblings just get a renumbered sort_order.
+            conn.execute(
+                "UPDATE notes SET parent_id = ?1, sort_order = ?2, updated_at = ?3 WHERE id = ?4",
+                params![parent_id, index as i64, now, sibling_id],
+            )
+        } else {
+            conn.execute(
+                "UPDATE notes SET sort_order = ?1 WHERE id = ?2",
+                params![index as i64, sibling_id],
+            )
+        }
+        .map_err(|e| e.to_string())?;
+    }
 
     find_note(&conn, id)
 }
@@ -179,12 +244,13 @@ pub fn duplicate_note(db: State<DbState>, id: i64) -> Result<Note, String> {
     let source = find_note(&conn, id)?;
     let now = now_iso();
     let title = format!("{} (copy)", source.title);
+    let sort_order = next_sort_order(&conn, source.parent_id)?;
 
     // A duplicate is never locked, even if the source is - it's a fresh copy
     // the user will likely want to edit further.
     conn.execute(
-        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown, is_locked) VALUES (?1, ?2, ?3, ?4, ?4, ?5, 0)",
-        params![title, source.content, source.parent_id, now, source.is_markdown],
+        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order) VALUES (?1, ?2, ?3, ?4, ?4, ?5, 0, ?6)",
+        params![title, source.content, source.parent_id, now, source.is_markdown, sort_order],
     )
     .map_err(|e| e.to_string())?;
 

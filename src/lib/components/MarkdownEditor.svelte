@@ -66,8 +66,8 @@
   }
 
   .markdown-editor :global(.tiptap) {
-    height: 100%;
-    padding: 1rem 1.1rem;
+    min-height: 100%;
+    padding: 1rem 1.1rem 4rem;
     outline: none;
     line-height: 1.55;
     color: inherit;

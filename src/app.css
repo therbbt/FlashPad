@@ -12,6 +12,9 @@ html, body, #app { margin: 0; width: 100%; height: 100%; overflow: hidden; }
 /* Theme-aware, not hardcoded: --bg/--text are set by App.svelte's global
    html[data-theme] rules. Anything rendered outside .shell (context menus,
    modals) relies on these inheriting correctly from the true document root. */
-body { background: var(--bg, #0f1115); color: var(--text, #f5f7fb); }
+/* Transparent so the window's shadow margin (see .app-shell) shows the
+   desktop through it instead of a solid rectangle - the actual app
+   background lives on .app-shell itself, inset from the true window edges. */
+body { background: transparent; color: var(--text, #f5f7fb); }
 textarea, input, button { font: inherit; }
 button { cursor: pointer; }

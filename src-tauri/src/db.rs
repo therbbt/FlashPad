@@ -25,7 +25,8 @@ pub fn init(db_path: PathBuf) -> Connection {
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             is_markdown INTEGER NOT NULL DEFAULT 0,
-            is_locked INTEGER NOT NULL DEFAULT 0
+            is_locked INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0
         );",
     )
     .expect("failed to create schema");
@@ -34,6 +35,7 @@ pub fn init(db_path: PathBuf) -> Connection {
     migrate_folders_into_notes(&conn);
     migrate_add_markdown_column(&conn);
     migrate_add_locked_column(&conn);
+    migrate_add_sort_order_column(&conn);
 
     conn.execute_batch("PRAGMA foreign_keys = ON;")
         .expect("failed to enable foreign keys");
@@ -201,6 +203,50 @@ fn migrate_add_locked_column(conn: &Connection) {
         .expect("failed to add is_locked column");
 }
 
+/// Adds the manual tree-position column to existing databases created
+/// before it existed. Fresh installs already get the column via CREATE
+/// TABLE above. Backfills each parent group (including the root, where
+/// parent_id IS NULL) with sequential values in today's effective display
+/// order (oldest-first by created_at), so existing installs see no visual
+/// change immediately after upgrading - only a later drag-and-drop
+/// reorder deviates from that order afterwards.
+fn migrate_add_sort_order_column(conn: &Connection) {
+    if column_exists(conn, "sort_order") {
+        return;
+    }
+    conn.execute_batch("ALTER TABLE notes ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;")
+        .expect("failed to add sort_order column");
+
+    let parent_groups: Vec<Option<i64>> = {
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT parent_id FROM notes")
+            .expect("failed to read parent groups");
+        stmt.query_map([], |row| row.get::<_, Option<i64>>(0))
+            .expect("failed to read parent groups")
+            .filter_map(Result::ok)
+            .collect()
+    };
+
+    for parent_id in parent_groups {
+        let ids: Vec<i64> = {
+            let mut stmt = conn
+                .prepare("SELECT id FROM notes WHERE parent_id IS ?1 ORDER BY created_at, id")
+                .expect("failed to read sibling group");
+            stmt.query_map(params![parent_id], |row| row.get::<_, i64>(0))
+                .expect("failed to read sibling group")
+                .filter_map(Result::ok)
+                .collect()
+        };
+        for (index, id) in ids.into_iter().enumerate() {
+            conn.execute(
+                "UPDATE notes SET sort_order = ?1 WHERE id = ?2",
+                params![index as i64, id],
+            )
+            .expect("failed to backfill sort_order");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +326,7 @@ mod tests {
         assert!(!table_exists(&conn, "folders"));
         assert!(column_exists(&conn, "is_markdown"));
         assert!(column_exists(&conn, "is_locked"));
+        assert!(column_exists(&conn, "sort_order"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -343,6 +390,55 @@ mod tests {
 
         // Safe to rerun.
         migrate_add_locked_column(&conn);
+    }
+
+    #[test]
+    fn migrate_add_sort_order_column_backfills_existing_order() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL DEFAULT 'Untitled',
+                content TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                parent_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+                is_markdown INTEGER NOT NULL DEFAULT 0,
+                is_locked INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO notes (id, title, content, created_at, updated_at, parent_id)
+            VALUES (1, 'Root A', '', '2026-01-01T00:00:00', '2026-01-01T00:00:00', NULL);
+            INSERT INTO notes (id, title, content, created_at, updated_at, parent_id)
+            VALUES (2, 'Root B', '', '2026-01-02T00:00:00', '2026-01-02T00:00:00', NULL);
+            INSERT INTO notes (id, title, content, created_at, updated_at, parent_id)
+            VALUES (3, 'Child of A, older', '', '2026-01-01T01:00:00', '2026-01-01T01:00:00', 1);
+            INSERT INTO notes (id, title, content, created_at, updated_at, parent_id)
+            VALUES (4, 'Child of A, newer', '', '2026-01-01T02:00:00', '2026-01-01T02:00:00', 1);",
+        )
+        .unwrap();
+
+        assert!(!column_exists(&conn, "sort_order"));
+        migrate_add_sort_order_column(&conn);
+        assert!(column_exists(&conn, "sort_order"));
+
+        let root_a_order: i64 = conn
+            .query_row("SELECT sort_order FROM notes WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        let root_b_order: i64 = conn
+            .query_row("SELECT sort_order FROM notes WHERE id = 2", [], |r| r.get(0))
+            .unwrap();
+        assert!(root_a_order < root_b_order, "Root A was created first, so should sort before Root B");
+
+        let child_older_order: i64 = conn
+            .query_row("SELECT sort_order FROM notes WHERE id = 3", [], |r| r.get(0))
+            .unwrap();
+        let child_newer_order: i64 = conn
+            .query_row("SELECT sort_order FROM notes WHERE id = 4", [], |r| r.get(0))
+            .unwrap();
+        assert!(child_older_order < child_newer_order);
+
+        // Safe to rerun.
+        migrate_add_sort_order_column(&conn);
     }
 
     #[test]

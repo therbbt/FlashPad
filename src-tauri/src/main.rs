@@ -5,6 +5,7 @@ mod notes;
 
 use db::DbState;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -73,16 +74,35 @@ fn set_hotkey(app: AppHandle, state: State<HotkeyState>, hotkey: String) -> Resu
     Ok(())
 }
 
-#[command]
-fn hide_window(window: tauri::Window) {
-    let _ = window.hide();
+/// Tracks whether we last told the window to be shown or hidden. Every
+/// hide/show trigger in this file (the hotkey, the tray icon, the
+/// `hide_window` command used by Escape/minimize/close) goes through
+/// `hide_main_window`/`show_main_window` below so this stays authoritative -
+/// deliberately NOT re-derived from `window.is_visible()` on each call,
+/// since that getter was observed to lag behind the real state under
+/// XWayland (forced on Linux to fix the custom title bar, see GDK_BACKEND
+/// below), which made the hotkey need an extra press to actually show the
+/// window again after hiding it.
+static WINDOW_SHOWN: AtomicBool = AtomicBool::new(true);
+
+fn hide_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+        WINDOW_SHOWN.store(false, Ordering::SeqCst);
+    }
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
+        WINDOW_SHOWN.store(true, Ordering::SeqCst);
     }
+}
+
+#[command]
+fn hide_window(app: AppHandle) {
+    hide_main_window(&app);
 }
 
 /// Runs entirely in Rust so the hotkey works instantly even while the
@@ -91,21 +111,40 @@ fn show_main_window(app: &tauri::AppHandle) {
 /// toggle, which was the cause of several-second delays after showing the
 /// window via the hotkey.
 fn toggle_main_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let visible = window.is_visible().unwrap_or(false);
-        let focused = window.is_focused().unwrap_or(false);
-        if visible && focused {
-            let _ = window.hide();
-        } else {
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
+    if WINDOW_SHOWN.load(Ordering::SeqCst) {
+        hide_main_window(app);
+    } else {
+        show_main_window(app);
     }
 }
 
 fn main() {
+    // KWin (KDE's Wayland compositor) draws its own server-side title bar
+    // for GTK windows regardless of the app's `decorations: false` request -
+    // that negotiation only works reliably over X11's Motif WM hints, not
+    // natively over Wayland. Forcing GTK onto XWayland (still works fine
+    // inside a native Wayland session) makes our custom title bar actually
+    // take effect, with no per-user window-manager configuration needed.
+    // Unconditional: Wayland desktop sessions commonly export GDK_BACKEND
+    // themselves (e.g. GDK_BACKEND=wayland), so an "only if unset" check
+    // never actually overrides it.
+    #[cfg(target_os = "linux")]
+    {
+        std::env::set_var("GDK_BACKEND", "x11");
+        eprintln!("[flashpad] GDK_BACKEND forced to: {:?}", std::env::var("GDK_BACKEND"));
+    }
+
     tauri::Builder::default()
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            // Excludes DECORATIONS: otherwise this plugin persists the
+            // window's decorated state across restarts and re-applies it on
+            // every launch, silently overriding `decorations: false` in
+            // tauri.conf.json with whatever was saved before that setting
+            // existed.
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(tauri_plugin_window_state::StateFlags::all() & !tauri_plugin_window_state::StateFlags::DECORATIONS)
+                .build(),
+        )
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec![HIDDEN_LAUNCH_FLAG.into()]),
@@ -129,6 +168,7 @@ fn main() {
             notes::delete_note,
             notes::move_note,
             notes::duplicate_note,
+            notes::reorder_note,
         ])
         .setup(|app| {
             let data_dir = app
@@ -170,16 +210,17 @@ fn main() {
                 .build(app)?;
 
             if let Some(window) = app.get_webview_window("main") {
-                let window_clone = window.clone();
+                let app_handle = app.handle().clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
-                        let _ = window_clone.hide();
+                        hide_main_window(&app_handle);
                     }
                 });
 
                 if std::env::args().any(|arg| arg == HIDDEN_LAUNCH_FLAG) {
                     let _ = window.hide();
+                    WINDOW_SHOWN.store(false, Ordering::SeqCst);
                 }
             }
 

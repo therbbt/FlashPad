@@ -12,6 +12,8 @@
   import MarkdownEditor from './lib/components/MarkdownEditor.svelte';
   import MarkdownHelpPanel from './lib/components/MarkdownHelpPanel.svelte';
   import ConfirmDialog from './lib/components/ConfirmDialog.svelte';
+  import TitleBar from './lib/components/TitleBar.svelte';
+  import ResizeHandles from './lib/components/ResizeHandles.svelte';
 
   const notesService = new NotesService();
   const settingsService = new SettingsService();
@@ -111,7 +113,7 @@
 
   const buildTree = (noteList: NoteRecord[]): TreeItem[] => {
     const nodeById = new Map<number, TreeItem>();
-    noteList.forEach((n) => nodeById.set(n.id, { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown, isLocked: n.isLocked, createdAt: n.createdAt }));
+    noteList.forEach((n) => nodeById.set(n.id, { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown, isLocked: n.isLocked, createdAt: n.createdAt, sortOrder: n.sortOrder }));
 
     const roots: TreeItem[] = [];
     noteList.forEach((n) => {
@@ -121,10 +123,12 @@
       else roots.push(node);
     });
 
-    // Oldest first - createdAt is a fixed-width ISO-like string, so plain
-    // string comparison already sorts chronologically.
+    // sortOrder is the single source of truth for tree order - it starts
+    // out equivalent to creation order (see migrate_add_sort_order_column
+    // and next_sort_order in the Rust backend) and is only changed by
+    // dragging a note to reorder or renest it.
     const sortItems = (items: TreeItem[]) => {
-      items.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      items.sort((a, b) => a.sortOrder - b.sortOrder);
       items.forEach((item) => sortItems(item.children));
     };
     sortItems(roots);
@@ -178,7 +182,7 @@
         .sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }))
     : [];
   $: visibleFlat = isSearching
-    ? searchResults.map((n) => ({ key: `note:${n.id}`, item: { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown, isLocked: n.isLocked, createdAt: n.createdAt } as TreeItem }))
+    ? searchResults.map((n) => ({ key: `note:${n.id}`, item: { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown, isLocked: n.isLocked, createdAt: n.createdAt, sortOrder: n.sortOrder } as TreeItem }))
     : flattenVisible(tree, expandedNotes);
   $: if (visibleFlat.length && !visibleFlat.some((v) => v.key === focusedKey)) {
     focusedKey = visibleFlat[0].key;
@@ -376,7 +380,7 @@
       '---',
       '',
       '*Start typing to replace this note.*',
-    ].join('\n\n\n');
+    ].join('\n');
 
     const created = await notesService.create({ title: 'Welcome to FlashPad', content, parentId: null, isMarkdown: true });
     notes = [created, ...notes];
@@ -422,6 +426,43 @@
     } catch (err) {
       status = err instanceof Error ? err.message : 'Move failed';
       return false;
+    }
+  };
+
+  // ---------- drag-and-drop tree reordering ----------
+
+  let draggingId: number | null = null;
+  $: dropDisabledIds = draggingId != null ? new Set([draggingId, ...collectDescendantNoteIds(draggingId)]) : new Set<number>();
+
+  const onDragStartRow = (id: number) => (draggingId = id);
+  const onDragEndRow = () => (draggingId = null);
+  const onDropRow = (draggedId: number, targetId: number, zone: 'before' | 'inside' | 'after') => void handleTreeDrop(draggedId, targetId, zone);
+
+  const handleTreeDrop = async (draggedId: number, targetId: number, zone: 'before' | 'inside' | 'after') => {
+    if (draggedId === targetId || dropDisabledIds.has(targetId)) return;
+    const target = notes.find((n) => n.id === targetId);
+    if (!target) return;
+
+    let parentId: number | null;
+    let beforeId: number | null;
+    if (zone === 'inside') {
+      parentId = target.id;
+      beforeId = null;
+    } else {
+      parentId = target.parentId;
+      const siblings = notes
+        .filter((n) => n.parentId === target.parentId && n.id !== draggedId)
+        .sort((a, b) => a.sortOrder - b.sortOrder);
+      const targetIndex = siblings.findIndex((n) => n.id === targetId);
+      beforeId = zone === 'before' ? targetId : (siblings[targetIndex + 1]?.id ?? null);
+    }
+
+    try {
+      await notesService.reorder(draggedId, parentId, beforeId);
+      await refreshNotes();
+      status = 'Reordered';
+    } catch (err) {
+      status = err instanceof Error ? err.message : 'Reorder failed';
     }
   };
 
@@ -576,6 +617,8 @@
     focusedKey,
     renamingKey,
     cutId: clipboard?.mode === 'cut' ? clipboard.id : null,
+    draggingId,
+    dropDisabledIds,
     onToggleExpand: toggleExpand,
     onSelectNote: (id: number) => void openNote(id),
     onNoteContextMenu: openNoteMenu,
@@ -585,6 +628,9 @@
     },
     onRenameCommit: commitRename,
     onRenameCancel: () => (renamingKey = null),
+    onDragStartRow,
+    onDragEndRow,
+    onDropRow,
   };
 
   // ---------- keyboard navigation ----------
@@ -742,7 +788,10 @@
 </svelte:head>
 
 <div class="app-shell">
-  <div class="action-toolbar">
+  <ResizeHandles />
+  <TitleBar />
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="action-toolbar" on:contextmenu|preventDefault>
     <button class="toolbar-btn" bind:this={notesButton} on:click={openNotesMenu} aria-label="Notes">
       <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
         <path d="M4 1.5h5.17a1 1 0 0 1 .7.3l2.83 2.83a1 1 0 0 1 .3.7V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.5a1 1 0 0 1 1-1Z" />
@@ -795,10 +844,6 @@
 
   <div class="shell">
   <aside class="sidebar" style="width: {sidebarWidth}px">
-    <div class="sidebar-top">
-      <h1>FlashPad</h1>
-    </div>
-
     <div
       class="tree"
       bind:this={treeEl}
@@ -809,7 +854,7 @@
     >
       {#if isSearching}
         {#each searchResults as note (note.id)}
-          <TreeNode item={{ id: note.id, title: note.title, children: [], isMarkdown: note.isMarkdown, isLocked: note.isLocked, createdAt: note.createdAt }} depth={0} {...treeNodeProps} />
+          <TreeNode item={{ id: note.id, title: note.title, children: [], isMarkdown: note.isMarkdown, isLocked: note.isLocked, createdAt: note.createdAt, sortOrder: note.sortOrder }} depth={0} {...treeNodeProps} />
         {/each}
         {#if !searchResults.length}
           <p class="empty-hint">No matches</p>
@@ -847,7 +892,8 @@
   <div class="sidebar-resizer" class:active={isResizingSidebar} on:mousedown={startSidebarResize}></div>
 
   <section class="editor-pane">
-    <header class="topbar">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <header class="topbar" on:contextmenu|preventDefault={openEditorMenu}>
       <div class="title-block">
         <input bind:value={title} class="title" placeholder="Untitled" readonly={isLockedActive} on:input={handleTitleInput} />
         <span class="breadcrumb">{currentPath}</span>
@@ -883,7 +929,7 @@
       {/if}
     </div>
 
-    <footer class="footer">
+    <footer class="footer" on:contextmenu|preventDefault>
       <div class="search-box">
         <input class="search-input" bind:value={query} on:keydown={handleTreeKeydown} placeholder="Search notes" />
         {#if isSearching}
@@ -967,12 +1013,12 @@
 <style>
   :global(html[data-theme='light']) {
     color-scheme: light;
-    --bg: #f4f6fb;
-    --panel: #ffffff;
-    --panel-2: #edf2f7;
-    --text: #111827;
-    --muted: #4b5563;
-    --border: rgba(17, 24, 39, 0.1);
+    --bg: #faf8f4;
+    --panel: #fefdfb;
+    --panel-2: #f0ece4;
+    --text: #211d18;
+    --muted: #6b6259;
+    --border: rgba(33, 29, 24, 0.1);
     --accent: #2563eb;
     --accent-soft: rgba(37, 99, 235, 0.14);
     --md-color: #7c3aed;
@@ -996,12 +1042,23 @@
     user-select: none;
   }
 
+  :global(html) {
+    /* Shared by .app-shell and every overlay/modal's backdrop, so the
+       transparent window margin that makes the drop shadow visible against
+       the desktop never gets painted over by a full-bleed backdrop. */
+    --window-shadow-margin: 2px;
+  }
+
   .app-shell {
+    position: fixed;
+    inset: var(--window-shadow-margin);
     display: flex;
     flex-direction: column;
-    height: 100%;
     background: var(--bg);
     color: var(--text);
+    border-radius: 0.6rem;
+    overflow: hidden;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
   }
 
   .shell {
@@ -1039,16 +1096,6 @@
     border-right: 2px solid var(--accent);
   }
 
-  .sidebar-top {
-    display: flex;
-    align-items: center;
-  }
-
-  .sidebar h1 {
-    margin: 0;
-    font-size: 1rem;
-  }
-
   .sidebar-bottom {
     display: flex;
     justify-content: flex-end;
@@ -1081,6 +1128,7 @@
     display: flex;
     flex-direction: column;
     gap: 1px;
+    margin-top: 0.3rem;
     /* Put the scrollbar on the left: flip the container to RTL (which moves
        a vertical scrollbar to the left edge), then flip every row back to
        LTR so text/content still reads normally. Also reserve the scrollbar's

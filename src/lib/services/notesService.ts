@@ -9,6 +9,7 @@ export interface NoteRecord {
   updatedAt: string;
   isMarkdown: boolean;
   isLocked: boolean;
+  sortOrder: number;
 }
 
 const STORAGE_KEY = 'flashpad.notes';
@@ -37,17 +38,21 @@ export class NotesService {
 
   async create(payload: { title?: string; content?: string; parentId?: number | null; isMarkdown?: boolean } = {}): Promise<NoteRecord> {
     if (!isTauriRuntime()) {
+      const parentId = payload.parentId ?? null;
+      const existing = readFallback();
+      const siblingOrders = existing.filter((n) => n.parentId === parentId).map((n) => n.sortOrder);
       const note: NoteRecord = {
         id: Date.now(),
         title: payload.title ?? 'Untitled',
         content: payload.content ?? '',
-        parentId: payload.parentId ?? null,
+        parentId,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         isMarkdown: payload.isMarkdown ?? false,
         isLocked: false,
+        sortOrder: siblingOrders.length ? Math.max(...siblingOrders) + 1 : 0,
       };
-      const notes = [...readFallback(), note];
+      const notes = [...existing, note];
       writeFallback(notes);
       return note;
     }
@@ -75,7 +80,10 @@ export class NotesService {
 
   async move(id: number, parentId: number | null): Promise<NoteRecord> {
     if (!isTauriRuntime()) {
-      const notes = readFallback().map((item) => (item.id === id ? { ...item, parentId, updatedAt: new Date().toISOString() } : item));
+      const existing = readFallback();
+      const siblingOrders = existing.filter((n) => n.parentId === parentId && n.id !== id).map((n) => n.sortOrder);
+      const sortOrder = siblingOrders.length ? Math.max(...siblingOrders) + 1 : 0;
+      const notes = existing.map((item) => (item.id === id ? { ...item, parentId, sortOrder, updatedAt: new Date().toISOString() } : item));
       writeFallback(notes);
       return notes.find((item) => item.id === id) as NoteRecord;
     }
@@ -84,8 +92,10 @@ export class NotesService {
 
   async duplicate(id: number): Promise<NoteRecord> {
     if (!isTauriRuntime()) {
-      const source = readFallback().find((item) => item.id === id);
+      const existing = readFallback();
+      const source = existing.find((item) => item.id === id);
       if (!source) throw new Error('Note not found');
+      const siblingOrders = existing.filter((n) => n.parentId === source.parentId).map((n) => n.sortOrder);
       const copy: NoteRecord = {
         ...source,
         id: Date.now(),
@@ -93,11 +103,33 @@ export class NotesService {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         isLocked: false,
+        sortOrder: siblingOrders.length ? Math.max(...siblingOrders) + 1 : 0,
       };
-      writeFallback([...readFallback(), copy]);
+      writeFallback([...existing, copy]);
       return copy;
     }
     return await invoke<NoteRecord>('duplicate_note', { id });
+  }
+
+  async reorder(id: number, parentId: number | null, beforeId: number | null): Promise<NoteRecord> {
+    if (!isTauriRuntime()) {
+      const existing = readFallback();
+      const siblings = existing
+        .filter((n) => n.parentId === parentId && n.id !== id)
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map((n) => n.id);
+      const insertAt = beforeId != null && siblings.includes(beforeId) ? siblings.indexOf(beforeId) : siblings.length;
+      siblings.splice(insertAt, 0, id);
+      const orderById = new Map(siblings.map((sid, index) => [sid, index]));
+      const notes = existing.map((item) =>
+        orderById.has(item.id)
+          ? { ...item, parentId, sortOrder: orderById.get(item.id)!, updatedAt: item.id === id ? new Date().toISOString() : item.updatedAt }
+          : item,
+      );
+      writeFallback(notes);
+      return notes.find((item) => item.id === id) as NoteRecord;
+    }
+    return await invoke<NoteRecord>('reorder_note', { id, parentId, beforeId });
   }
 
   async search(query: string): Promise<NoteRecord[]> {
