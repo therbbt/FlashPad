@@ -3,6 +3,8 @@
   import { Editor } from '@tiptap/core';
   import StarterKit from '@tiptap/starter-kit';
   import Placeholder from '@tiptap/extension-placeholder';
+  import TaskList from '@tiptap/extension-task-list';
+  import TaskItem from '@tiptap/extension-task-item';
   import { Markdown } from 'tiptap-markdown';
 
   export let content: string;
@@ -27,11 +29,15 @@
       extensions: [
         StarterKit,
         Placeholder.configure({ placeholder }),
+        TaskList,
+        TaskItem.configure({ nested: true }),
         // breaks: true keeps a single newline as a hard line break (matching
         // the plain textarea) instead of CommonMark's default of collapsing
         // it into a soft space, so existing plain content doesn't visually
         // reflow the first time a note is switched into markdown mode.
-        Markdown.configure({ breaks: true }),
+        // linkify: true turns bare URLs in the markdown source into real
+        // links (GFM autolink), matching GitHub's rendering.
+        Markdown.configure({ breaks: true, linkify: true }),
       ],
       content,
       onUpdate: ({ editor: instance }) => {
@@ -146,6 +152,41 @@
   .markdown-editor :global(.tiptap ol) {
     padding-left: 1.4em;
     margin: 0.3em 0;
+  }
+
+  .markdown-editor :global(.tiptap a) {
+    color: var(--accent);
+  }
+
+  .markdown-editor :global(.tiptap ul[data-type='taskList']) {
+    padding-left: 0.2em;
+    list-style: none;
+  }
+
+  .markdown-editor :global(.tiptap ul[data-type='taskList'] li) {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5em;
+  }
+
+  .markdown-editor :global(.tiptap ul[data-type='taskList'] li > label) {
+    display: flex;
+    margin-top: 0.35em;
+    user-select: none;
+  }
+
+  .markdown-editor :global(.tiptap ul[data-type='taskList'] li > label input[type='checkbox']) {
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+
+  .markdown-editor :global(.tiptap ul[data-type='taskList'] li > div) {
+    flex: 1;
+  }
+
+  .markdown-editor :global(.tiptap ul[data-type='taskList'] li > div > p) {
+    margin: 0;
   }
 
   .markdown-editor :global(.tiptap hr) {
