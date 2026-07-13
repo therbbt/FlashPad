@@ -1,4 +1,4 @@
-                                                                                                                                                  name: Build Fedora Linux package
+name: Build Linux packages
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     branches: [main]
 
 jobs:
-  build-fedora:
+  build-linux:
     runs-on: ubuntu-latest
     container:
       image: fedora:latest
@@ -50,7 +50,7 @@ jobs:
       - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
-          name: FlashPad-fedora
+          name: FlashPad-linux
           path: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/rpm/*.rpm
