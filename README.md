@@ -73,4 +73,3 @@ npm run tauri build
   - `src/lib/components/` — UI components (notes tree, editor, panels, etc.)
   - `src/lib/services/` — app services (notes, settings, hotkeys, database, autostart)
 - `src-tauri/` — Rust/Tauri backend and app configuration
-- `todo.md` — informal roadmap and notes
