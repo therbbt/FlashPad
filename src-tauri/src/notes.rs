@@ -102,7 +102,8 @@ fn find_note(conn: &rusqlite::Connection, id: i64) -> Result<Note, String> {
 
 #[tauri::command]
 pub fn list_notes(db: State<DbState>) -> Result<Vec<Note>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.0.lock().map_err(|e| e.to_string())?;
+    let conn = guard.as_ref().ok_or("No database is currently available")?;
     let mut stmt = conn
         .prepare(&format!(
             "SELECT {SELECT_COLUMNS} FROM notes ORDER BY updated_at DESC"
@@ -118,7 +119,8 @@ pub fn list_notes(db: State<DbState>) -> Result<Vec<Note>, String> {
 
 #[tauri::command]
 pub fn create_note(db: State<DbState>, note: NoteInput) -> Result<Note, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.0.lock().map_err(|e| e.to_string())?;
+    let conn = guard.as_ref().ok_or("No database is currently available")?;
     let now = now_iso();
     let title = note.title.unwrap_or_else(|| "Untitled".to_string());
     let content = note.content.unwrap_or_default();
@@ -137,7 +139,8 @@ pub fn create_note(db: State<DbState>, note: NoteInput) -> Result<Note, String> 
 
 #[tauri::command]
 pub fn update_note(db: State<DbState>, note: NoteUpdate) -> Result<Note, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.0.lock().map_err(|e| e.to_string())?;
+    let conn = guard.as_ref().ok_or("No database is currently available")?;
     let existing = find_note(&conn, note.id)?;
 
     let is_locked = note.is_locked.unwrap_or(existing.is_locked);
@@ -170,7 +173,8 @@ pub fn update_note(db: State<DbState>, note: NoteUpdate) -> Result<Note, String>
 
 #[tauri::command]
 pub fn delete_note(db: State<DbState>, id: i64) -> Result<(), String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.0.lock().map_err(|e| e.to_string())?;
+    let conn = guard.as_ref().ok_or("No database is currently available")?;
     conn.execute("DELETE FROM notes WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -178,7 +182,8 @@ pub fn delete_note(db: State<DbState>, id: i64) -> Result<(), String> {
 
 #[tauri::command]
 pub fn move_note(db: State<DbState>, id: i64, parent_id: Option<i64>) -> Result<Note, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.0.lock().map_err(|e| e.to_string())?;
+    let conn = guard.as_ref().ok_or("No database is currently available")?;
     check_no_cycle(&conn, id, parent_id)?;
 
     let now = now_iso();
@@ -199,7 +204,8 @@ pub fn move_note(db: State<DbState>, id: i64, parent_id: Option<i64>) -> Result<
 /// precision issues. Used by the sidebar's drag-and-drop tree reordering.
 #[tauri::command]
 pub fn reorder_note(db: State<DbState>, id: i64, parent_id: Option<i64>, before_id: Option<i64>) -> Result<Note, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.0.lock().map_err(|e| e.to_string())?;
+    let conn = guard.as_ref().ok_or("No database is currently available")?;
     check_no_cycle(&conn, id, parent_id)?;
 
     let mut stmt = conn
@@ -240,7 +246,8 @@ pub fn reorder_note(db: State<DbState>, id: i64, parent_id: Option<i64>, before_
 
 #[tauri::command]
 pub fn duplicate_note(db: State<DbState>, id: i64) -> Result<Note, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let guard = db.0.lock().map_err(|e| e.to_string())?;
+    let conn = guard.as_ref().ok_or("No database is currently available")?;
     let source = find_note(&conn, id)?;
     let now = now_iso();
     let title = format!("{} (copy)", source.title);

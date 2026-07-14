@@ -1,46 +1,117 @@
-use rusqlite::{params, Connection};
-use std::path::PathBuf;
+use rusqlite::{params, Connection, OpenFlags};
+use std::path::Path;
 use std::sync::Mutex;
 
-pub struct DbState(pub Mutex<Connection>);
+const SCHEMA_SQL: &str = "CREATE TABLE IF NOT EXISTS folders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        parent_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL DEFAULT 'Untitled',
+        content TEXT NOT NULL DEFAULT '',
+        folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        is_markdown INTEGER NOT NULL DEFAULT 0,
+        is_locked INTEGER NOT NULL DEFAULT 0,
+        sort_order INTEGER NOT NULL DEFAULT 0
+    );";
 
-pub fn init(db_path: PathBuf) -> Connection {
-    if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent).expect("failed to create app data dir");
+/// Holds the live connection to whichever database is currently active.
+/// `None` means the configured path is unreachable/unavailable (e.g. an
+/// unmounted sync folder) - see `activate()` below - rather than a
+/// placeholder empty database ever being silently created in its place.
+pub struct DbState(pub Mutex<Option<Connection>>);
+
+/// Explains *why* `DbState` currently holds `None`, kept separate from
+/// `DbState` itself so `notes.rs` commands only ever need the generic
+/// "no database available" error, while `get_app_state` can surface the
+/// specific reason (e.g. "path does not exist") for the startup error UI.
+pub enum DbStatus {
+    Ready,
+    Unavailable(String),
+}
+
+pub struct DbStatusState(pub Mutex<DbStatus>);
+
+/// Opens `path` and reports the outcome as both a (possibly absent) live
+/// connection and a status describing why - so callers never reconstruct a
+/// `DbStatus` from a `Result` themselves. Used identically by initial
+/// startup, `switch_database`, and after registering a new profile.
+pub fn activate(path: &Path) -> (Option<Connection>, DbStatus) {
+    match open_and_migrate(path) {
+        Ok(conn) => (Some(conn), DbStatus::Ready),
+        Err(err) => (None, DbStatus::Unavailable(err)),
     }
-    let conn = Connection::open(db_path).expect("failed to open database");
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS folders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            parent_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS notes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL DEFAULT 'Untitled',
-            content TEXT NOT NULL DEFAULT '',
-            folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            is_markdown INTEGER NOT NULL DEFAULT 0,
-            is_locked INTEGER NOT NULL DEFAULT 0,
-            sort_order INTEGER NOT NULL DEFAULT 0
-        );",
-    )
-    .expect("failed to create schema");
+}
 
-    migrate_legacy_folder_column(&conn);
-    migrate_folders_into_notes(&conn);
-    migrate_add_markdown_column(&conn);
-    migrate_add_locked_column(&conn);
-    migrate_add_sort_order_column(&conn);
+/// Creates the schema if missing and runs the full migration chain against
+/// an already-open connection. Factored out of `open_and_migrate` so it can
+/// also be run after an in-place SQLite restore (import), where the
+/// connection was already open before its backing file content changed -
+/// there's no new path to open, just the existing connection to bring
+/// forward, which matters since an imported file may predate a migration.
+pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(SCHEMA_SQL).map_err(|e| e.to_string())?;
+
+    migrate_legacy_folder_column(conn);
+    migrate_folders_into_notes(conn);
+    migrate_add_markdown_column(conn);
+    migrate_add_locked_column(conn);
+    migrate_add_sort_order_column(conn);
 
     conn.execute_batch("PRAGMA foreign_keys = ON;")
-        .expect("failed to enable foreign keys");
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
 
-    conn
+/// Opens (creating if needed) and migrates the database at `db_path`.
+/// Fallible by design: callers include a background scheduler thread and a
+/// "switch database" command, neither of which should be able to crash the
+/// whole app just because one configured path is temporarily unreachable.
+pub fn open_and_migrate(db_path: &Path) -> Result<Connection, String> {
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    ensure_schema(&conn)?;
+    Ok(conn)
+}
+
+/// Cheap, deliberately lenient check that `path` looks like a genuine
+/// FlashPad database before it's trusted with an import/relocation/restore:
+/// valid SQLite file, passes `quick_check`, and has a `notes` table. Does
+/// NOT check the exact current column list, so a legitimate export from an
+/// older FlashPad version isn't rejected - `open_and_migrate`'s existing
+/// migration chain brings any recognized older shape forward after the file
+/// is actually opened for real.
+pub fn validate_flashpad_file(path: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    if bytes.len() < 16 || &bytes[0..16] != b"SQLite format 3\0" {
+        return Err("Not a valid SQLite database file".to_string());
+    }
+
+    // READ_ONLY alone (no CREATE flag) guarantees this check can never
+    // itself bring a new empty database file into existence at `path`.
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| e.to_string())?;
+
+    let check: String = conn
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if check != "ok" {
+        return Err(format!("Database failed integrity check: {check}"));
+    }
+
+    if !table_exists(&conn, "notes") {
+        return Err("File does not contain a FlashPad database".to_string());
+    }
+
+    Ok(())
 }
 
 /// Earlier builds stored notes.folder as a free-text label, and `CREATE TABLE
@@ -251,6 +322,89 @@ fn migrate_add_sort_order_column(conn: &Connection) {
 mod tests {
     use super::*;
 
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("flashpad-db-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(format!("{name}.sqlite3"))
+    }
+
+    #[test]
+    fn validate_flashpad_file_accepts_a_real_database() {
+        let path = temp_path("valid");
+        let _ = std::fs::remove_file(&path);
+        open_and_migrate(&path).unwrap();
+
+        assert!(validate_flashpad_file(&path).is_ok());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn validate_flashpad_file_rejects_a_non_sqlite_file() {
+        let path = temp_path("garbage");
+        std::fs::write(&path, b"definitely not a sqlite file").unwrap();
+
+        let result = validate_flashpad_file(&path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Not a valid SQLite database"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn validate_flashpad_file_rejects_a_sqlite_file_without_a_notes_table() {
+        let path = temp_path("wrong-schema");
+        let _ = std::fs::remove_file(&path);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE something_else (id INTEGER PRIMARY KEY);")
+            .unwrap();
+        drop(conn);
+
+        let result = validate_flashpad_file(&path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("FlashPad database"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn validate_flashpad_file_never_creates_a_file_at_a_missing_path() {
+        let path = temp_path("does-not-exist");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(validate_flashpad_file(&path).is_err());
+        assert!(!path.exists(), "validation must never bring a file into existence");
+    }
+
+    #[test]
+    fn ensure_schema_is_reusable_against_an_already_open_connection() {
+        // Mirrors what import_database does: restore changes an existing
+        // Connection's backing content, then ensure_schema is re-run against
+        // that same live connection (no new path to open).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL DEFAULT 'Untitled',
+                content TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                parent_id INTEGER REFERENCES notes(id) ON DELETE CASCADE
+            );
+            INSERT INTO notes (title, content, created_at, updated_at)
+            VALUES ('Imported from an older version', '', '2026-01-01T00:00:00', '2026-01-01T00:00:00');",
+        )
+        .unwrap();
+
+        assert!(!column_exists(&conn, "is_markdown"));
+        ensure_schema(&conn).unwrap();
+        assert!(column_exists(&conn, "is_markdown"));
+        assert!(column_exists(&conn, "sort_order"));
+
+        let note_count: i64 = conn.query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0)).unwrap();
+        assert_eq!(note_count, 1, "the imported note must survive being brought forward");
+    }
+
     #[test]
     fn migrates_legacy_folder_text_column_into_folders_table() {
         let conn = Connection::open_in_memory().unwrap();
@@ -318,7 +472,7 @@ mod tests {
     fn init_creates_fresh_schema_without_migration() {
         let dir = std::env::temp_dir().join(format!("flashpad-test-{}", std::process::id()));
         let db_path = dir.join("test.sqlite3");
-        let conn = init(db_path);
+        let conn = open_and_migrate(&db_path).unwrap();
 
         assert!(column_exists(&conn, "parent_id"));
         assert!(!column_exists(&conn, "folder_id"));

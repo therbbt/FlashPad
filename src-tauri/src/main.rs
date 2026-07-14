@@ -1,9 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod backup;
 mod db;
 mod notes;
+mod profiles;
+mod scheduler;
 
-use db::DbState;
+use db::{DbState, DbStatusState};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -189,6 +192,7 @@ fn main() {
                 })
                 .build(),
         )
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             hide_window,
             frontend_ready,
@@ -201,14 +205,48 @@ fn main() {
             notes::move_note,
             notes::duplicate_note,
             notes::reorder_note,
+            profiles::get_app_state,
+            profiles::list_databases,
+            profiles::create_database,
+            profiles::add_existing_database,
+            profiles::rename_database,
+            profiles::remove_database,
+            profiles::switch_database,
+            profiles::reload_database,
+            profiles::set_database_path,
+            profiles::get_backup_settings,
+            profiles::set_backup_settings,
+            backup::create_backup_now,
+            backup::list_backups,
+            backup::export_database,
+            backup::import_database,
         ])
         .setup(|app| {
             let data_dir = app
                 .path()
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
-            let conn = db::init(data_dir.join("flashpad.sqlite3"));
+
+            let mut config = profiles::load(&data_dir);
+            // Guards against a hand-edited config.json whose active id
+            // doesn't match any registered database - fall back to the
+            // first profile rather than refusing to start.
+            if profiles::active_database(&config).is_err() {
+                if let Some(first) = config.databases.first() {
+                    config.active_database_id = first.id;
+                }
+            }
+            let active_path = profiles::active_database(&config)
+                .expect("bootstrap always yields at least one database")
+                .path
+                .clone();
+            let (conn, status) = db::activate(&active_path);
+
             app.manage(DbState(Mutex::new(conn)));
+            app.manage(DbStatusState(Mutex::new(status)));
+            app.manage(profiles::ConfigState(Mutex::new(config)));
+
+            scheduler::spawn(app.handle().clone());
 
             let initial_hotkey = load_hotkey(&data_dir);
             app.global_shortcut()
