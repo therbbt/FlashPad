@@ -4,11 +4,12 @@
   import { NotesService, type NoteRecord } from './lib/services/notesService';
   import { SettingsService, type FlashPadSettings } from './lib/services/settingsService';
   import { HotkeyService } from './lib/services/hotkeyService';
-  import { DatabaseService } from './lib/services/databaseService';
+  import { DatabaseService, type AppState } from './lib/services/databaseService';
   import TreeNode, { type TreeItem } from './lib/components/TreeNode.svelte';
   import ContextMenu, { type ContextMenuItem } from './lib/components/ContextMenu.svelte';
   import ShortcutsPanel from './lib/components/ShortcutsPanel.svelte';
   import SettingsPanel from './lib/components/SettingsPanel.svelte';
+  import DatabaseManagerModal from './lib/components/DatabaseManagerModal.svelte';
   import MarkdownEditor from './lib/components/MarkdownEditor.svelte';
   import MarkdownHelpPanel from './lib/components/MarkdownHelpPanel.svelte';
   import ConfirmDialog from './lib/components/ConfirmDialog.svelte';
@@ -37,7 +38,12 @@
   let clipboard: { id: number; mode: 'copy' | 'cut' } | null = null;
   let shortcutsOpen = false;
   let settingsOpen = false;
+  let databaseManagerOpen = false;
   let markdownHelpOpen = false;
+  // Set when the configured active database is unreachable at startup (e.g.
+  // an unmounted sync folder) - replaces the notes UI with an error view
+  // instead of silently falling through to an empty note list.
+  let startupError: string | null = null;
   let hotkeySetting = 'Alt+S';
   let sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
   let isResizingSidebar = false;
@@ -200,6 +206,61 @@
   const refreshAll = async () => {
     await refreshNotes();
     status = 'Refreshed';
+  };
+
+  // Loads notes for whichever database is currently active and selects
+  // something to show. Extracted out of onMount so switching databases (or
+  // importing into the active one) can re-run exactly the same startup
+  // sequence without a full app reload.
+  const initializeNotes = async () => {
+    await refreshAll();
+    if (notes.length) {
+      selectNote(notes[0]);
+    } else {
+      await createWelcomeNote();
+    }
+    requestAnimationFrame(() => textarea?.focus());
+  };
+
+  // Resets everything scoped to the previously-active database's notes so
+  // no stale ids from the old vault leak into tree-expansion, clipboard, or
+  // search state after switching to a different database.
+  const resetNoteScopedState = () => {
+    selectedId = null;
+    activeParentId = null;
+    expandedNotes = new Set();
+    clipboard = null;
+    query = '';
+  };
+
+  // Shared by every path that can hand back a fresh AppState after
+  // touching the active connection (switching, reloading, retrying startup)
+  // - `switch_database`/`reload_database` resolve successfully even when
+  // activation itself failed (e.g. a removable drive unplugged mid-action),
+  // so `ready` must be checked explicitly rather than assumed from the
+  // absence of a thrown error.
+  const applyAppState = async (state: AppState | null, unavailableMessage: string) => {
+    if (!state || !state.ready) {
+      startupError = state?.error ?? unavailableMessage;
+      return;
+    }
+    startupError = null;
+    resetNoteScopedState();
+    await initializeNotes();
+  };
+
+  const switchToDatabase = async (id: number) => {
+    const state = await databaseService.switchDatabase(id);
+    await applyAppState(state, 'The selected database is unavailable.');
+  };
+
+  const handleDatabaseReloaded = async (state: AppState) => {
+    await applyAppState(state, 'The database is unavailable.');
+  };
+
+  const retryStartup = async () => {
+    const state = await databaseService.getAppState();
+    await applyAppState(state, 'The configured database is unavailable.');
   };
 
   // ---------- note editor ----------
@@ -750,7 +811,7 @@
     }
 
     if (event.key === 'Escape') {
-      if (contextMenu || shortcutsOpen || settingsOpen || markdownHelpOpen || confirmState) return;
+      if (contextMenu || shortcutsOpen || settingsOpen || databaseManagerOpen || markdownHelpOpen || confirmState) return;
       event.preventDefault();
       void invoke('hide_window').catch(() => {
         status = 'Window hidden';
@@ -767,13 +828,13 @@
       theme = settings.theme;
       document.documentElement.dataset.theme = theme;
       hotkeySetting = await hotkeyService.get();
-      await refreshAll();
-      if (notes.length) {
-        selectNote(notes[0]);
+
+      const appState = await databaseService.getAppState();
+      if (appState && !appState.ready) {
+        startupError = appState.error ?? 'The configured database is unavailable.';
       } else {
-        await createWelcomeNote();
+        await initializeNotes();
       }
-      requestAnimationFrame(() => textarea?.focus());
     } catch (err) {
       console.error('FlashPad failed to initialize', err);
       status = err instanceof Error ? err.message : 'Startup error';
@@ -795,6 +856,20 @@
   <title>FlashPad</title>
 </svelte:head>
 
+{#if startupError}
+  <div class="startup-error-shell">
+    <ResizeHandles />
+    <TitleBar />
+    <div class="startup-error-body">
+      <h2>FlashPad can't reach your database</h2>
+      <p>{startupError}</p>
+      <div class="startup-error-actions">
+        <button class="btn" on:click={() => void retryStartup()}>Retry</button>
+        <button class="btn primary" on:click={() => (settingsOpen = true)}>Open Settings</button>
+      </div>
+    </div>
+  </div>
+{:else}
 <div class="app-shell">
   <ResizeHandles />
   <TitleBar />
@@ -983,6 +1058,7 @@
   </section>
   </div>
 </div>
+{/if}
 
 {#if contextMenu}
   <ContextMenu x={contextMenu.x} y={contextMenu.y} items={contextMenu.items} onClose={closeContextMenu} />
@@ -997,6 +1073,22 @@
     hotkey={hotkeySetting}
     onHotkeyChange={(next) => (hotkeySetting = next)}
     onClose={() => (settingsOpen = false)}
+    onOpenDatabaseManager={() => (databaseManagerOpen = true)}
+    onRequestConfirm={confirmDialog}
+    onImported={async () => {
+      startupError = null;
+      resetNoteScopedState();
+      await initializeNotes();
+    }}
+    onReloaded={handleDatabaseReloaded}
+  />
+{/if}
+
+{#if databaseManagerOpen}
+  <DatabaseManagerModal
+    onClose={() => (databaseManagerOpen = false)}
+    onSwitch={switchToDatabase}
+    onRequestConfirm={confirmDialog}
   />
 {/if}
 
@@ -1067,6 +1159,67 @@
     border-radius: 0.6rem;
     overflow: hidden;
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  }
+
+  .startup-error-shell {
+    position: fixed;
+    inset: var(--window-shadow-margin);
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--text);
+    border-radius: 0.6rem;
+    overflow: hidden;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  }
+
+  .startup-error-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 2rem;
+    text-align: center;
+  }
+
+  .startup-error-body h2 {
+    margin: 0;
+    font-size: 1rem;
+  }
+
+  .startup-error-body p {
+    margin: 0;
+    max-width: 32rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  .startup-error-actions {
+    display: flex;
+    gap: 0.6rem;
+    margin-top: 0.5rem;
+  }
+
+  .startup-error-actions .btn {
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    background: var(--panel-2);
+    color: var(--text);
+    font-size: 0.82rem;
+    padding: 0.4rem 0.9rem;
+    cursor: pointer;
+  }
+
+  .startup-error-actions .btn:hover {
+    background: var(--border);
+  }
+
+  .startup-error-actions .btn.primary {
+    background: var(--accent-soft, var(--panel-2));
+    font-weight: 600;
   }
 
   .shell {

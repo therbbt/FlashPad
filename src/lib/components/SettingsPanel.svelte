@@ -1,14 +1,31 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { open, save } from '@tauri-apps/plugin-dialog';
   import { AutostartService } from '../services/autostartService';
   import { HotkeyService } from '../services/hotkeyService';
+  import { DatabaseService, type AppState } from '../services/databaseService';
+  import { BackupService } from '../services/backupService';
 
   export let hotkey: string;
   export let onHotkeyChange: (hotkey: string) => void;
   export let onClose: () => void;
+  export let onOpenDatabaseManager: () => void;
+  export let onRequestConfirm: (message: string) => Promise<boolean>;
+  // Called after an import replaces the active database's contents, so
+  // App.svelte can reload notes and reset note-scoped UI state. NOT called
+  // after a location change - the data itself is unchanged, only where it
+  // lives on disk, so there's nothing for the notes view to refresh.
+  export let onImported: () => Promise<void>;
+  // Called after a manual "Reload database" - unlike onImported this can
+  // report the database as unreachable (reload_database resolves even when
+  // reactivation fails), so App.svelte needs the AppState itself to decide
+  // whether to show the notes view or the startup-error view.
+  export let onReloaded: (state: AppState) => Promise<void>;
 
   const autostartService = new AutostartService();
   const hotkeyService = new HotkeyService();
+  const databaseService = new DatabaseService();
+  const backupService = new BackupService();
 
   let panelEl: HTMLDivElement;
   let autostart = false;
@@ -24,7 +41,15 @@
   let hotkeySaved = false;
   let hotkeyError = '';
 
+  let appState: AppState | null = null;
+  let dbBusy = false;
+  let dbMessage = '';
+  let dbError = '';
+  let retentionInput = 7;
+  let retentionSaving = false;
+
   $: canSaveHotkey = (ctrlMod || altMod || shiftMod || superMod) && keyInput.trim().length > 0;
+  $: activeDatabase = appState?.databases.find((d) => d.id === appState?.activeDatabaseId) ?? null;
 
   const parseHotkey = (value: string) => {
     ctrlMod = false;
@@ -94,9 +119,128 @@
     }
   };
 
+  const loadDatabaseSection = async () => {
+    try {
+      appState = await databaseService.getAppState();
+      if (appState) retentionInput = appState.backup.retentionCount;
+    } catch (err) {
+      dbError = err instanceof Error ? err.message : 'Failed to load database settings';
+    }
+  };
+
+  const saveRetentionCount = async () => {
+    retentionSaving = true;
+    dbError = '';
+    try {
+      await backupService.setRetentionCount(retentionInput);
+      await loadDatabaseSection();
+    } catch (err) {
+      dbError = err instanceof Error ? err.message : 'Failed to save retention count';
+    } finally {
+      retentionSaving = false;
+    }
+  };
+
+  const changeLocation = async () => {
+    const picked = await save({
+      defaultPath: activeDatabase?.name ? `${activeDatabase.name}.sqlite3` : 'flashpad.sqlite3',
+      filters: [{ name: 'FlashPad database', extensions: ['sqlite3', 'db'] }],
+    });
+    if (!picked) return;
+    dbBusy = true;
+    dbError = '';
+    dbMessage = '';
+    try {
+      await databaseService.setDatabasePath(picked);
+      await loadDatabaseSection();
+      dbMessage = 'Database location updated. The previous file was left in place.';
+    } catch (err) {
+      dbError = err instanceof Error ? err.message : 'Failed to change database location';
+    } finally {
+      dbBusy = false;
+    }
+  };
+
+  const exportDatabase = async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const picked = await save({
+      defaultPath: `flashpad-export-${today}.db`,
+      filters: [{ name: 'FlashPad database', extensions: ['db', 'sqlite3'] }],
+    });
+    if (!picked) return;
+    dbBusy = true;
+    dbError = '';
+    dbMessage = '';
+    try {
+      await backupService.exportTo(picked);
+      dbMessage = 'Exported successfully.';
+    } catch (err) {
+      dbError = err instanceof Error ? err.message : 'Failed to export database';
+    } finally {
+      dbBusy = false;
+    }
+  };
+
+  const importDatabase = async () => {
+    const picked = await open({
+      multiple: false,
+      filters: [{ name: 'FlashPad database', extensions: ['db', 'sqlite3'] }],
+    });
+    if (typeof picked !== 'string') return;
+
+    const ok = await onRequestConfirm(
+      'Importing will replace ALL notes in the currently active database with the contents of the selected file. A safety backup of your current data will be created automatically first. Continue?',
+    );
+    if (!ok) return;
+
+    dbBusy = true;
+    dbError = '';
+    dbMessage = '';
+    try {
+      await backupService.importFrom(picked);
+      await onImported();
+      dbMessage = 'Import complete.';
+    } catch (err) {
+      dbError = err instanceof Error ? err.message : 'Failed to import database';
+    } finally {
+      dbBusy = false;
+    }
+  };
+
+  const backupNow = async () => {
+    dbBusy = true;
+    dbError = '';
+    dbMessage = '';
+    try {
+      await backupService.createNow();
+      dbMessage = 'Backup created.';
+    } catch (err) {
+      dbError = err instanceof Error ? err.message : 'Failed to create backup';
+    } finally {
+      dbBusy = false;
+    }
+  };
+
+  const reloadDatabase = async () => {
+    dbBusy = true;
+    dbError = '';
+    dbMessage = '';
+    try {
+      const state = await databaseService.reloadDatabase();
+      appState = state;
+      await onReloaded(state);
+      if (state.ready) dbMessage = 'Database reloaded.';
+    } catch (err) {
+      dbError = err instanceof Error ? err.message : 'Failed to reload database';
+    } finally {
+      dbBusy = false;
+    }
+  };
+
   onMount(() => {
     parseHotkey(hotkey);
     window.addEventListener('mousedown', handleOutsideClick, true);
+    void loadDatabaseSection();
     (async () => {
       try {
         autostart = await autostartService.isEnabled();
@@ -163,6 +307,56 @@
       {/if}
       {#if hotkeyError}
         <p class="error">{hotkeyError}</p>
+      {/if}
+    </div>
+
+    <div class="section">
+      <span class="section-title">Database</span>
+
+      {#if activeDatabase}
+        <p class="db-current">
+          <strong>{activeDatabase.name}</strong>
+          <span class="db-path" title={activeDatabase.path}>{activeDatabase.path}</span>
+        </p>
+      {/if}
+
+      {#if appState?.syncWarning}
+        <p class="sync-warning">{appState.syncWarning}</p>
+      {/if}
+
+      <p class="hint">Backups are stored locally on this device only, even if the database itself lives in a synced folder.</p>
+
+      <div class="db-buttons">
+        <button class="save-btn" disabled={dbBusy} on:click={changeLocation}>Change location…</button>
+        <button class="save-btn" disabled={dbBusy} on:click={exportDatabase}>Export…</button>
+        <button class="save-btn" disabled={dbBusy} on:click={importDatabase}>Import…</button>
+        <button class="save-btn" disabled={dbBusy} on:click={backupNow}>Back up now</button>
+        <button
+          class="save-btn"
+          disabled={dbBusy}
+          on:click={reloadDatabase}
+          title="Re-reads the database file from disk - use this after a sync client (OneDrive, Dropbox) pulls down changes made on another device"
+        >
+          Reload database
+        </button>
+      </div>
+
+      <div class="retention-row">
+        <span>Keep last</span>
+        <input class="retention-input" type="number" min="1" bind:value={retentionInput} />
+        <span>backups</span>
+        <button class="save-btn" disabled={retentionSaving} on:click={saveRetentionCount}>
+          {retentionSaving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+
+      <button class="manage-link" on:click={onOpenDatabaseManager}>Manage databases…</button>
+
+      {#if dbMessage}
+        <p class="saved-hint">{dbMessage}</p>
+      {/if}
+      {#if dbError}
+        <p class="error">{dbError}</p>
       {/if}
     </div>
   </div>
@@ -306,5 +500,89 @@
     margin: 0.4rem 0 0;
     font-size: 0.75rem;
     color: #ef4444;
+  }
+
+  .db-current {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    margin: 0 0 0.5rem;
+    font-size: 0.8rem;
+    color: var(--text);
+  }
+
+  .db-path {
+    font-size: 0.7rem;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sync-warning {
+    margin: 0 0 0.5rem;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: var(--muted);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    padding: 0.4rem 0.5rem;
+  }
+
+  .hint {
+    margin: 0 0 0.5rem;
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+
+  .db-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.6rem;
+  }
+
+  .db-buttons .save-btn {
+    margin-left: 0;
+  }
+
+  .retention-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.78rem;
+    color: var(--muted);
+    margin-bottom: 0.6rem;
+  }
+
+  .retention-row .save-btn {
+    margin-left: auto;
+  }
+
+  .retention-input {
+    width: 3rem;
+    text-align: center;
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+    background: var(--panel-2);
+    color: inherit;
+    font-size: 0.78rem;
+    padding: 0.25rem 0.2rem;
+  }
+
+  .manage-link {
+    display: block;
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 0.75rem;
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .manage-link:hover {
+    color: var(--text);
   }
 </style>
