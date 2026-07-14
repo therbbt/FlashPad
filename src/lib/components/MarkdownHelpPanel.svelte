@@ -17,6 +17,8 @@
     ['> text', 'Blockquote'],
     ['- text', 'Bullet list'],
     ['1. text', 'Numbered list'],
+    ['- [ ] text', 'Checkbox (task list)'],
+    ['https://...', 'Auto-linked URL'],
     ['---', 'Horizontal divider'],
   ];
 
