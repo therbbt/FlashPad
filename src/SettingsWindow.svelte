@@ -1,33 +1,23 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { open, save } from '@tauri-apps/plugin-dialog';
-  import { AutostartService } from '../services/autostartService';
-  import { HotkeyService } from '../services/hotkeyService';
-  import { DatabaseService, type AppState } from '../services/databaseService';
-  import { BackupService } from '../services/backupService';
-
-  export let hotkey: string;
-  export let onHotkeyChange: (hotkey: string) => void;
-  export let onClose: () => void;
-  export let onOpenDatabaseManager: () => void;
-  export let onRequestConfirm: (message: string) => Promise<boolean>;
-  // Called after an import replaces the active database's contents, so
-  // App.svelte can reload notes and reset note-scoped UI state. NOT called
-  // after a location change - the data itself is unchanged, only where it
-  // lives on disk, so there's nothing for the notes view to refresh.
-  export let onImported: () => Promise<void>;
-  // Called after a manual "Reload database" - unlike onImported this can
-  // report the database as unreachable (reload_database resolves even when
-  // reactivation fails), so App.svelte needs the AppState itself to decide
-  // whether to show the notes view or the startup-error view.
-  export let onReloaded: (state: AppState) => Promise<void>;
+  import { emit, listen } from '@tauri-apps/api/event';
+  import { invoke } from '@tauri-apps/api/core';
+  import { AutostartService } from './lib/services/autostartService';
+  import { HotkeyService } from './lib/services/hotkeyService';
+  import { DatabaseService, type AppState } from './lib/services/databaseService';
+  import { BackupService } from './lib/services/backupService';
+  import { SettingsService } from './lib/services/settingsService';
+  import TitleBar from './lib/components/TitleBar.svelte';
+  import ResizeHandles from './lib/components/ResizeHandles.svelte';
+  import ConfirmDialog from './lib/components/ConfirmDialog.svelte';
 
   const autostartService = new AutostartService();
   const hotkeyService = new HotkeyService();
+  const settingsService = new SettingsService();
   const databaseService = new DatabaseService();
   const backupService = new BackupService();
 
-  let panelEl: HTMLDivElement;
   let autostart = false;
   let loading = true;
   let error = '';
@@ -48,8 +38,26 @@
   let retentionInput = 7;
   let retentionSaving = false;
 
+  let confirmState: { message: string; resolve: (value: boolean) => void } | null = null;
+
   $: canSaveHotkey = (ctrlMod || altMod || shiftMod || superMod) && keyInput.trim().length > 0;
   $: activeDatabase = appState?.databases.find((d) => d.id === appState?.activeDatabaseId) ?? null;
+
+  const requestConfirm = (message: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      confirmState = { message, resolve };
+    });
+  };
+
+  const minimizeSelf = async () => {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    await getCurrentWindow().minimize();
+  };
+
+  const closeSelf = async () => {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    await getCurrentWindow().close();
+  };
 
   const parseHotkey = (value: string) => {
     ctrlMod = false;
@@ -78,19 +86,6 @@
     return mods.length && key ? [...mods, key].join('+') : '';
   };
 
-  const handleKeydown = (event: KeyboardEvent) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      onClose();
-    }
-  };
-
-  const handleOutsideClick = (event: MouseEvent) => {
-    if (panelEl && !panelEl.contains(event.target as Node)) {
-      onClose();
-    }
-  };
-
   const toggleAutostart = async () => {
     const next = !autostart;
     error = '';
@@ -110,7 +105,7 @@
     hotkeySaving = true;
     try {
       await hotkeyService.set(built);
-      onHotkeyChange(built);
+      await emit('hotkey-changed', built);
       hotkeySaved = true;
     } catch (err) {
       hotkeyError = err instanceof Error ? err.message : 'Failed to update hotkey';
@@ -188,7 +183,7 @@
     });
     if (typeof picked !== 'string') return;
 
-    const ok = await onRequestConfirm(
+    const ok = await requestConfirm(
       'Importing will replace ALL notes in the currently active database with the contents of the selected file. A safety backup of your current data will be created automatically first. Continue?',
     );
     if (!ok) return;
@@ -198,7 +193,8 @@
     dbMessage = '';
     try {
       await backupService.importFrom(picked);
-      await onImported();
+      await loadDatabaseSection();
+      if (appState) await emit('database-changed', appState);
       dbMessage = 'Import complete.';
     } catch (err) {
       dbError = err instanceof Error ? err.message : 'Failed to import database';
@@ -228,7 +224,7 @@
     try {
       const state = await databaseService.reloadDatabase();
       appState = state;
-      await onReloaded(state);
+      await emit('database-changed', state);
       if (state.ready) dbMessage = 'Database reloaded.';
     } catch (err) {
       dbError = err instanceof Error ? err.message : 'Failed to reload database';
@@ -237,9 +233,49 @@
     }
   };
 
+  const openDatabaseManager = () => {
+    void invoke('open_database_window').catch((err) => console.error('open_database_window failed', err));
+  };
+
+  let unlistenTheme: (() => void) | undefined;
+
   onMount(() => {
-    parseHotkey(hotkey);
-    window.addEventListener('mousedown', handleOutsideClick, true);
+    // Each window is a separate document, so the theme this window renders
+    // with has to be loaded and applied here too - it isn't inherited from
+    // the main window. The window is created invisible (see
+    // open_settings_window in Rust) specifically so nothing shows before
+    // the theme is applied and painted - the double rAF waits for the
+    // browser to have actually painted with that theme, rather than
+    // revealing a flash of the wrong (default dark) background first.
+    const reveal = () =>
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() =>
+          void invoke('show_utility_window', { label: 'settings' }).catch((err) =>
+            console.error('show_utility_window failed', err),
+          ),
+        ),
+      );
+    settingsService
+      .load()
+      .then((settings) => {
+        document.documentElement.dataset.theme = settings.theme;
+      })
+      .catch(() => {
+        // leave at default theme
+      })
+      .finally(reveal);
+    void listen<'dark' | 'light'>('theme-changed', (event) => {
+      document.documentElement.dataset.theme = event.payload;
+    }).then((unlisten) => {
+      unlistenTheme = unlisten;
+    });
+    (async () => {
+      try {
+        parseHotkey(await hotkeyService.get());
+      } catch {
+        parseHotkey('');
+      }
+    })();
     void loadDatabaseSection();
     (async () => {
       try {
@@ -250,25 +286,20 @@
         loading = false;
       }
     })();
-    return () => {
-      window.removeEventListener('mousedown', handleOutsideClick, true);
-    };
   });
+
+  onDestroy(() => unlistenTheme?.());
 </script>
 
-<svelte:window on:keydown={handleKeydown} />
+<svelte:head>
+  <title>FlashPad Settings</title>
+</svelte:head>
 
-<div class="overlay">
-  <div class="panel" bind:this={panelEl} role="dialog" aria-modal="true" aria-label="Settings">
-    <header>
-      <h2>Settings</h2>
-      <button class="close" on:click={onClose} aria-label="Close">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-          <path d="M2 2l12 12M14 2L2 14" />
-        </svg>
-      </button>
-    </header>
+<div class="shell">
+  <ResizeHandles />
+  <TitleBar title="Settings" onMinimize={minimizeSelf} onClose={closeSelf} />
 
+  <div class="content">
     <label class="row">
       <span>Start FlashPad when you log in</span>
       <input type="checkbox" checked={autostart} disabled={loading} on:change={toggleAutostart} />
@@ -350,7 +381,7 @@
         </button>
       </div>
 
-      <button class="manage-link" on:click={onOpenDatabaseManager}>Manage databases…</button>
+      <button class="manage-link" on:click={openDatabaseManager}>Manage databases…</button>
 
       {#if dbMessage}
         <p class="saved-hint">{dbMessage}</p>
@@ -362,55 +393,37 @@
   </div>
 </div>
 
+{#if confirmState}
+  <ConfirmDialog
+    message={confirmState.message}
+    onConfirm={() => {
+      confirmState?.resolve(true);
+      confirmState = null;
+    }}
+    onCancel={() => {
+      confirmState?.resolve(false);
+      confirmState = null;
+    }}
+  />
+{/if}
+
 <style>
-  .overlay {
+  .shell {
     position: fixed;
-    inset: var(--window-shadow-margin, 0);
-    background: rgba(0, 0, 0, 0.35);
+    inset: var(--window-shadow-margin);
     display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1100;
-  }
-
-  .panel {
-    width: min(360px, 90vw);
-    max-height: 80vh;
-    overflow: auto;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 0.6rem;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
-    padding: 0.75rem;
-  }
-
-  header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 0.5rem;
-  }
-
-  h2 {
-    margin: 0;
-    font-size: 0.9rem;
-  }
-
-  .close {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.5rem;
-    height: 1.5rem;
-    border: 1px solid var(--border);
-    border-radius: 0.4rem;
-    background: var(--panel-2);
-    color: var(--muted);
-    padding: 0;
-  }
-
-  .close:hover {
+    flex-direction: column;
+    background: var(--bg);
     color: var(--text);
+    border-radius: 0.6rem;
+    overflow: hidden;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  }
+
+  .content {
+    flex: 1;
+    overflow: auto;
+    padding: 0.75rem;
   }
 
   .row {

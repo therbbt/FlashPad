@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { emit, listen } from '@tauri-apps/api/event';
   import { NotesService, type NoteRecord } from './lib/services/notesService';
   import { SettingsService, type FlashPadSettings } from './lib/services/settingsService';
   import { HotkeyService } from './lib/services/hotkeyService';
@@ -8,8 +9,6 @@
   import TreeNode, { type TreeItem } from './lib/components/TreeNode.svelte';
   import ContextMenu, { type ContextMenuItem } from './lib/components/ContextMenu.svelte';
   import ShortcutsPanel from './lib/components/ShortcutsPanel.svelte';
-  import SettingsPanel from './lib/components/SettingsPanel.svelte';
-  import DatabaseManagerModal from './lib/components/DatabaseManagerModal.svelte';
   import MarkdownEditor from './lib/components/MarkdownEditor.svelte';
   import MarkdownHelpPanel from './lib/components/MarkdownHelpPanel.svelte';
   import ConfirmDialog from './lib/components/ConfirmDialog.svelte';
@@ -37,8 +36,6 @@
   let confirmState: { message: string; resolve: (value: boolean) => void } | null = null;
   let clipboard: { id: number; mode: 'copy' | 'cut' } | null = null;
   let shortcutsOpen = false;
-  let settingsOpen = false;
-  let databaseManagerOpen = false;
   let markdownHelpOpen = false;
   // Set when the configured active database is unreachable at startup (e.g.
   // an unmounted sync folder) - replaces the notes UI with an error view
@@ -247,15 +244,6 @@
     startupError = null;
     resetNoteScopedState();
     await initializeNotes();
-  };
-
-  const switchToDatabase = async (id: number) => {
-    const state = await databaseService.switchDatabase(id);
-    await applyAppState(state, 'The selected database is unavailable.');
-  };
-
-  const handleDatabaseReloaded = async (state: AppState) => {
-    await applyAppState(state, 'The database is unavailable.');
   };
 
   const retryStartup = async () => {
@@ -740,6 +728,7 @@
     theme = theme === 'dark' ? 'light' : 'dark';
     document.documentElement.dataset.theme = theme;
     void settingsService.saveTheme(theme);
+    void emit('theme-changed', theme);
   };
 
   const openInsertMenu = () => {
@@ -811,7 +800,7 @@
     }
 
     if (event.key === 'Escape') {
-      if (contextMenu || shortcutsOpen || settingsOpen || databaseManagerOpen || markdownHelpOpen || confirmState) return;
+      if (contextMenu || shortcutsOpen || markdownHelpOpen || confirmState) return;
       event.preventDefault();
       void invoke('hide_window').catch(() => {
         status = 'Window hidden';
@@ -847,8 +836,23 @@
       // invisible if something above threw.
       requestAnimationFrame(() => requestAnimationFrame(() => void invoke('frontend_ready').catch(() => {})));
     }
+
+    // The Settings and Database Manager windows are separate webviews now,
+    // so they can't just call back into this component's state - they emit
+    // these once they've made a change that this window needs to reflect.
+    const unlistenHotkey = await listen<string>('hotkey-changed', (event) => {
+      hotkeySetting = event.payload;
+    });
+    const unlistenDatabase = await listen<AppState>('database-changed', (event) => {
+      void applyAppState(event.payload, 'The selected database is unavailable.');
+    });
+
     window.addEventListener('keydown', handleKeydown);
-    return () => window.removeEventListener('keydown', handleKeydown);
+    return () => {
+      window.removeEventListener('keydown', handleKeydown);
+      unlistenHotkey();
+      unlistenDatabase();
+    };
   });
 </script>
 
@@ -865,7 +869,7 @@
       <p>{startupError}</p>
       <div class="startup-error-actions">
         <button class="btn" on:click={() => void retryStartup()}>Retry</button>
-        <button class="btn primary" on:click={() => (settingsOpen = true)}>Open Settings</button>
+        <button class="btn primary" on:click={() => void invoke('open_settings_window').catch((err) => console.error('open_settings_window failed', err))}>Open Settings</button>
       </div>
     </div>
   </div>
@@ -915,7 +919,7 @@
         <span>Shortcuts</span>
       </button>
 
-      <button class="toolbar-btn" on:click={() => (settingsOpen = true)} aria-label="Settings">
+      <button class="toolbar-btn" on:click={() => void invoke('open_settings_window').catch((err) => console.error('open_settings_window failed', err))} aria-label="Settings">
         <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="8" cy="8" r="2.2" />
           <path d="M8 2v1.6M8 12.4V14M14 8h-1.6M3.6 8H2M12.13 3.87l-1.13 1.13M4.99 11.01l-1.13 1.13M12.13 12.13l-1.13-1.13M4.99 4.99 3.87 3.87" />
@@ -1068,30 +1072,6 @@
   <ShortcutsPanel hotkey={hotkeySetting} onClose={() => (shortcutsOpen = false)} />
 {/if}
 
-{#if settingsOpen}
-  <SettingsPanel
-    hotkey={hotkeySetting}
-    onHotkeyChange={(next) => (hotkeySetting = next)}
-    onClose={() => (settingsOpen = false)}
-    onOpenDatabaseManager={() => (databaseManagerOpen = true)}
-    onRequestConfirm={confirmDialog}
-    onImported={async () => {
-      startupError = null;
-      resetNoteScopedState();
-      await initializeNotes();
-    }}
-    onReloaded={handleDatabaseReloaded}
-  />
-{/if}
-
-{#if databaseManagerOpen}
-  <DatabaseManagerModal
-    onClose={() => (databaseManagerOpen = false)}
-    onSwitch={switchToDatabase}
-    onRequestConfirm={confirmDialog}
-  />
-{/if}
-
 {#if markdownHelpOpen}
   <MarkdownHelpPanel onClose={() => (markdownHelpOpen = false)} />
 {/if}
@@ -1111,42 +1091,9 @@
 {/if}
 
 <style>
-  :global(html[data-theme='light']) {
-    color-scheme: light;
-    --bg: #faf8f4;
-    --panel: #fefdfb;
-    --panel-2: #f0ece4;
-    --text: #211d18;
-    --muted: #6b6259;
-    --border: rgba(33, 29, 24, 0.1);
-    --accent: #2563eb;
-    --accent-soft: rgba(37, 99, 235, 0.14);
-    --md-color: #7c3aed;
-  }
-
-  :global(html:not([data-theme='light'])) {
-    color-scheme: dark;
-    --bg: #16161a;
-    --panel: #1e1e22;
-    --panel-2: #28282d;
-    --text: #ecebe7;
-    --muted: #97958d;
-    --border: rgba(255,255,255,0.08);
-    --accent: #5b9bd5;
-    --accent-soft: rgba(91, 155, 213, 0.18);
-    --md-color: #a78bfa;
-  }
-
   :global(body.resizing-sidebar) {
     cursor: col-resize;
     user-select: none;
-  }
-
-  :global(html) {
-    /* Shared by .app-shell and every overlay/modal's backdrop, so the
-       transparent window margin that makes the drop shadow visible against
-       the desktop never gets painted over by a full-bleed backdrop. */
-    --window-shadow-margin: 1px;
   }
 
   .app-shell {

@@ -1,6 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-
   export let onClose: () => void;
 
   let panelEl: HTMLDivElement;
@@ -35,17 +33,12 @@
     }
   };
 
-  onMount(() => {
-    window.addEventListener('mousedown', handleOutsideClick, true);
-    return () => {
-      window.removeEventListener('mousedown', handleOutsideClick, true);
-    };
-  });
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
 
-<div class="overlay">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="overlay" on:mousedown={handleOutsideClick}>
   <div class="panel" bind:this={panelEl} role="dialog" aria-modal="true" aria-label="Markdown guide">
     <header>
       <h2>Markdown guide</h2>

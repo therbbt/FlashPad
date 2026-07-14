@@ -3,13 +3,11 @@
   import { open, save } from '@tauri-apps/plugin-dialog';
   import { DatabaseService, type DatabaseProfile } from '../services/databaseService';
 
-  export let onClose: () => void;
   export let onSwitch: (id: number) => Promise<void>;
   export let onRequestConfirm: (message: string) => Promise<boolean>;
 
   const databaseService = new DatabaseService();
 
-  let panelEl: HTMLDivElement;
   let databases: DatabaseProfile[] = [];
   let activeId: number | null = null;
   let loading = true;
@@ -39,19 +37,6 @@
       loading = false;
     }
   });
-
-  const handleKeydown = (event: KeyboardEvent) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      onClose();
-    }
-  };
-
-  const handleOutsideClick = (event: MouseEvent) => {
-    if (panelEl && !panelEl.contains(event.target as Node)) {
-      onClose();
-    }
-  };
 
   const startRename = (db: DatabaseProfile) => {
     renamingId = db.id;
@@ -150,142 +135,76 @@
   };
 </script>
 
-<svelte:window on:keydown={handleKeydown} />
-
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="overlay" on:mousedown={handleOutsideClick}>
-  <div class="panel" bind:this={panelEl} role="dialog" aria-modal="true" aria-label="Manage databases">
-    <header>
-      <h2>Databases</h2>
-      <button class="close" on:click={onClose} aria-label="Close">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-          <path d="M2 2l12 12M14 2L2 14" />
-        </svg>
-      </button>
-    </header>
-
-    {#if loading}
-      <p class="hint">Loading…</p>
-    {:else}
-      <ul class="db-list">
-        {#each databases as db (db.id)}
-          <li class="db-row" class:active={db.id === activeId}>
-            <div class="db-info">
-              {#if renamingId === db.id}
-                <input
-                  class="rename-input"
-                  bind:value={renameValue}
-                  on:blur={() => commitRename(db.id)}
-                  on:keydown={(e) => {
-                    if (e.key === 'Enter') commitRename(db.id);
-                    if (e.key === 'Escape') renamingId = null;
-                  }}
-                  autofocus
-                />
-              {:else}
-                <span class="db-name">{db.name}</span>
-                {#if db.id === activeId}
-                  <span class="badge">Active</span>
-                {/if}
-              {/if}
-              <span class="db-path" title={db.path}>{db.path}</span>
-            </div>
-            <div class="db-actions">
-              {#if db.id !== activeId}
-                <button class="btn" disabled={switching} on:click={() => switchTo(db)}>Switch</button>
-              {/if}
-              <button class="btn" on:click={() => startRename(db)}>Rename</button>
-              {#if db.id !== activeId && databases.length > 1}
-                <button class="btn danger" on:click={() => removeDatabase(db)}>Remove</button>
-              {/if}
-            </div>
-          </li>
-        {/each}
-      </ul>
-    {/if}
-
-    {#if error}
-      <p class="error">{error}</p>
-    {/if}
-
-    <div class="section">
-      {#if addMode}
-        <div class="add-form">
-          <input class="name-input" placeholder="Name" bind:value={addName} />
-          <div class="path-row">
-            <input class="path-input" placeholder="No location chosen" readonly value={addPath} />
-            <button class="btn" on:click={addMode === 'new' ? pickLocationForNew : pickExistingFile}>
-              Choose…
-            </button>
-          </div>
-          <div class="add-actions">
-            <button class="btn" on:click={cancelAdd}>Cancel</button>
-            <button class="btn primary" disabled={!addName.trim() || !addPath || addBusy} on:click={confirmAdd}>
-              {addBusy ? 'Adding…' : 'Add'}
-            </button>
-          </div>
+{#if loading}
+  <p class="hint">Loading…</p>
+{:else}
+  <ul class="db-list">
+    {#each databases as db (db.id)}
+      <li class="db-row" class:active={db.id === activeId}>
+        <div class="db-info">
+          {#if renamingId === db.id}
+            <input
+              class="rename-input"
+              bind:value={renameValue}
+              on:blur={() => commitRename(db.id)}
+              on:keydown={(e) => {
+                if (e.key === 'Enter') commitRename(db.id);
+                if (e.key === 'Escape') renamingId = null;
+              }}
+              autofocus
+            />
+          {:else}
+            <span class="db-name">{db.name}</span>
+            {#if db.id === activeId}
+              <span class="badge">Active</span>
+            {/if}
+          {/if}
+          <span class="db-path" title={db.path}>{db.path}</span>
         </div>
-      {:else}
-        <div class="add-buttons">
-          <button class="btn" on:click={() => (addMode = 'new')}>New Database…</button>
-          <button class="btn" on:click={() => (addMode = 'existing')}>Add Existing…</button>
+        <div class="db-actions">
+          {#if db.id !== activeId}
+            <button class="btn" disabled={switching} on:click={() => switchTo(db)}>Switch</button>
+          {/if}
+          <button class="btn" on:click={() => startRename(db)}>Rename</button>
+          {#if db.id !== activeId && databases.length > 1}
+            <button class="btn danger" on:click={() => removeDatabase(db)}>Remove</button>
+          {/if}
         </div>
-      {/if}
+      </li>
+    {/each}
+  </ul>
+{/if}
+
+{#if error}
+  <p class="error">{error}</p>
+{/if}
+
+<div class="section">
+  {#if addMode}
+    <div class="add-form">
+      <input class="name-input" placeholder="Name" bind:value={addName} />
+      <div class="path-row">
+        <input class="path-input" placeholder="No location chosen" readonly value={addPath} />
+        <button class="btn" on:click={addMode === 'new' ? pickLocationForNew : pickExistingFile}>
+          Choose…
+        </button>
+      </div>
+      <div class="add-actions">
+        <button class="btn" on:click={cancelAdd}>Cancel</button>
+        <button class="btn primary" disabled={!addName.trim() || !addPath || addBusy} on:click={confirmAdd}>
+          {addBusy ? 'Adding…' : 'Add'}
+        </button>
+      </div>
     </div>
-  </div>
+  {:else}
+    <div class="add-buttons">
+      <button class="btn" on:click={() => (addMode = 'new')}>New Database…</button>
+      <button class="btn" on:click={() => (addMode = 'existing')}>Add Existing…</button>
+    </div>
+  {/if}
 </div>
 
 <style>
-  .overlay {
-    position: fixed;
-    inset: var(--window-shadow-margin, 0);
-    background: rgba(0, 0, 0, 0.35);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1150;
-  }
-
-  .panel {
-    width: min(460px, 92vw);
-    max-height: 80vh;
-    overflow: auto;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 0.6rem;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
-    padding: 0.75rem;
-  }
-
-  header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 0.5rem;
-  }
-
-  h2 {
-    margin: 0;
-    font-size: 0.9rem;
-  }
-
-  .close {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.5rem;
-    height: 1.5rem;
-    border: 1px solid var(--border);
-    border-radius: 0.4rem;
-    background: var(--panel-2);
-    color: var(--muted);
-    padding: 0;
-  }
-
-  .close:hover {
-    color: var(--text);
-  }
-
   .hint {
     font-size: 0.8rem;
     color: var(--muted);
