@@ -5,49 +5,13 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  /* Shared by every window's .shell/.app-shell and every overlay/modal's
-     backdrop, so the transparent window margin that makes the drop shadow
-     visible against the desktop never gets painted over by a full-bleed
-     backdrop. Defined here (not per-window) since FlashPad is a multi-window
-     Tauri app - main, Settings, and Database Manager are separate documents
-     that each need this, not just App.svelte. */
-  --window-shadow-margin: 1px;
-}
-
-/* Theme variables, applied per-window via the `data-theme` attribute each
-   window's own bootstrap sets on its own document root from the persisted
-   theme setting (see App.svelte/SettingsWindow.svelte/DatabaseWindow.svelte).
-   Defined here rather than in one component's <style> block for the same
-   multi-window reason as --window-shadow-margin above - every window's
-   document needs these, not just whichever one happens to mount first. */
-html[data-theme='light'] {
-  color-scheme: light;
-  --bg: #faf8f4;
-  --panel: #fefdfb;
-  --panel-2: #f0ece4;
-  --text: #211d18;
-  --muted: #6b6259;
-  --border: rgba(33, 29, 24, 0.1);
-  --accent: #2563eb;
-  --accent-soft: rgba(37, 99, 235, 0.14);
-  --md-color: #7c3aed;
-}
-
-html:not([data-theme='light']) {
-  color-scheme: dark;
-  --bg: #16161a;
-  --panel: #1e1e22;
-  --panel-2: #28282d;
-  --text: #ecebe7;
-  --muted: #97958d;
-  --border: rgba(255,255,255,0.08);
-  --accent: #5b9bd5;
-  --accent-soft: rgba(91, 155, 213, 0.18);
-  --md-color: #a78bfa;
 }
 
 * { box-sizing: border-box; }
 html, body, #app { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+/* Theme-aware, not hardcoded: --bg/--text are set by App.svelte's global
+   html[data-theme] rules. Anything rendered outside .shell (context menus,
+   modals) relies on these inheriting correctly from the true document root. */
 /* Transparent so the window's shadow margin (see .app-shell) shows the
    desktop through it instead of a solid rectangle - the actual app
    background lives on .app-shell itself, inset from the true window edges. */

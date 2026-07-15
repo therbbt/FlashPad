@@ -836,7 +836,6 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-window-state",
- "tokio",
 ]
 
 [[package]]

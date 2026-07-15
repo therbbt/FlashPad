@@ -7,7 +7,6 @@ mod profiles;
 mod scheduler;
 
 use db::{DbState, DbStatusState};
-use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -122,157 +121,6 @@ fn hide_window(app: AppHandle) {
     hide_main_window(&app);
 }
 
-/// Tracks two independent bits per utility window label ("settings",
-/// "database-manager"): whether its frontend has actually painted
-/// (`painted`), and whether something has asked for it to be seen
-/// (`wants_visible`). The window is only ever shown once *both* are true -
-/// see `maybe_show_utility_window`. Kept as two sets rather than one enum
-/// map since either can flip independently and in either order: the app
-/// pre-warms every utility window hidden at startup (painted flips first,
-/// wants_visible stays false), while a normal cold open from a fresh click
-/// sets wants_visible first and waits on painted.
-struct UtilityWindowState {
-    painted: Mutex<HashSet<String>>,
-    wants_visible: Mutex<HashSet<String>>,
-}
-
-fn maybe_show_utility_window(app: &AppHandle, label: &str) {
-    let state = app.state::<UtilityWindowState>();
-    let painted = state.painted.lock().unwrap().contains(label);
-    let wants_visible = state.wants_visible.lock().unwrap().contains(label);
-    eprintln!("[flashpad] maybe_show_utility_window({label}): painted={painted} wants_visible={wants_visible}");
-    if !(painted && wants_visible) {
-        return;
-    }
-    match app.get_webview_window(label) {
-        Some(window) => {
-            if let Err(err) = window.show() {
-                eprintln!("[flashpad] {label}.show() failed: {err}");
-            }
-            if let Err(err) = window.set_focus() {
-                eprintln!("[flashpad] {label}.set_focus() failed: {err}");
-            }
-        }
-        None => eprintln!("[flashpad] maybe_show_utility_window({label}): no such window"),
-    }
-}
-
-/// Ensures `label` exists, creating it invisible and pre-loaded with
-/// `index.html?window=<label>` if it doesn't (`main.ts` reads that query
-/// param to decide which Svelte root to mount) - idempotent, so it's safe
-/// to call both for startup pre-warming and from the on-demand open
-/// commands below. Never shows the window itself: see
-/// `maybe_show_utility_window`.
-///
-/// Closing one of these hides it rather than destroying it (mirroring the
-/// main window's own close-to-tray behavior) specifically so the already-
-/// warmed webview can be reused - recreating a whole webview from scratch
-/// on every open was the main source of Settings/Database Manager feeling
-/// slow to open.
-fn open_utility_window(
-    app: &AppHandle,
-    label: &str,
-    title: &str,
-    width: f64,
-    height: f64,
-) -> Result<(), String> {
-    if app.get_webview_window(label).is_some() {
-        eprintln!("[flashpad] open_utility_window({label}): already exists, skipping create");
-        return Ok(());
-    }
-
-    let url = format!("index.html?window={label}");
-    eprintln!("[flashpad] open_utility_window({label}): creating, url={url}");
-
-    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App(url.into()))
-        .title(title)
-        .inner_size(width, height)
-        .resizable(true)
-        .transparent(true)
-        .decorations(false)
-        .visible(false)
-        .build()
-        .map_err(|e| {
-            eprintln!("[flashpad] open_utility_window({label}): build failed: {e}");
-            e.to_string()
-        })?;
-
-    if let Some(window) = app.get_webview_window(label) {
-        let app_handle = app.clone();
-        let label_owned = label.to_string();
-        window.on_window_event(move |event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                if let Some(w) = app_handle.get_webview_window(&label_owned) {
-                    let _ = w.hide();
-                }
-            }
-        });
-    }
-
-    Ok(())
-}
-
-/// Pre-creates every utility window hidden, at app startup - so the first
-/// time the user opens Settings or the Database Manager, the webview has
-/// already been created and (usually) already painted, and only needs a
-/// `.show()` rather than a full cold webview startup.
-fn prewarm_utility_windows(app: &AppHandle) {
-    let _ = open_utility_window(app, "settings", "FlashPad Settings", 460.0, 640.0);
-    let _ = open_utility_window(app, "database-manager", "FlashPad Databases", 520.0, 560.0);
-}
-
-/// Marks `label` as wanted-visible, tries to show it now, and - in case the
-/// frontend's own "I've painted" signal (`show_utility_window`) never
-/// arrives for some reason (a JS error, a slow first paint, anything) -
-/// schedules a fallback that force-shows it a couple seconds later
-/// regardless. Better a rare early/unstyled reveal than a window that
-/// silently never appears at all, which is strictly worse.
-fn request_utility_window(app: &AppHandle, label: &'static str) {
-    app.state::<UtilityWindowState>().wants_visible.lock().unwrap().insert(label.into());
-    maybe_show_utility_window(app, label);
-
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-        if let Some(window) = app_handle.get_webview_window(label) {
-            if let Ok(false) = window.is_visible() {
-                eprintln!("[flashpad] {label} still not visible after 2s, forcing show as a fallback");
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }
-    });
-}
-
-#[command]
-fn open_settings_window(app: AppHandle) -> Result<(), String> {
-    eprintln!("[flashpad] open_settings_window invoked");
-    open_utility_window(&app, "settings", "FlashPad Settings", 460.0, 640.0)?;
-    request_utility_window(&app, "settings");
-    Ok(())
-}
-
-#[command]
-fn open_database_window(app: AppHandle) -> Result<(), String> {
-    eprintln!("[flashpad] open_database_window invoked");
-    open_utility_window(&app, "database-manager", "FlashPad Databases", 520.0, 560.0)?;
-    request_utility_window(&app, "database-manager");
-    Ok(())
-}
-
-/// Called by a utility window's own frontend once its content has actually
-/// painted with the right theme applied - see the doc comment on
-/// `UtilityWindowState` for how this combines with `wants_visible` to
-/// decide whether to actually reveal the window now.
-#[command]
-fn show_utility_window(app: AppHandle, label: String) -> Result<(), String> {
-    eprintln!("[flashpad] show_utility_window({label}) invoked (frontend painted)");
-    app.state::<UtilityWindowState>().painted.lock().unwrap().insert(label.clone());
-    maybe_show_utility_window(&app, &label);
-    Ok(())
-}
-
 /// Called by the frontend once its initial render is actually ready to be
 /// seen (data loaded, note selected/created, first paint done) - the window
 /// is created invisible (`visible: false` in tauri.conf.json) specifically
@@ -350,9 +198,6 @@ fn main() {
             frontend_ready,
             get_hotkey,
             set_hotkey,
-            open_settings_window,
-            open_database_window,
-            show_utility_window,
             notes::list_notes,
             notes::create_note,
             notes::update_note,
@@ -400,10 +245,6 @@ fn main() {
             app.manage(DbState(Mutex::new(conn)));
             app.manage(DbStatusState(Mutex::new(status)));
             app.manage(profiles::ConfigState(Mutex::new(config)));
-            app.manage(UtilityWindowState {
-                painted: Mutex::new(HashSet::new()),
-                wants_visible: Mutex::new(HashSet::new()),
-            });
 
             scheduler::spawn(app.handle().clone());
 
@@ -454,8 +295,6 @@ fn main() {
                     }
                 });
             }
-
-            prewarm_utility_windows(&app.handle().clone());
 
             Ok(())
         })

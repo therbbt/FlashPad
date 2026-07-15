@@ -2,13 +2,6 @@
   import { onMount, onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
 
-  // Utility windows (Settings, Database Manager) pass these to close/minimize
-  // themselves directly instead of the main window's hide-to-tray behavior -
-  // see the doc comment on `minimize`/`close` below.
-  export let title = 'FlashPad';
-  export let onMinimize: (() => void) | undefined = undefined;
-  export let onClose: (() => void) | undefined = undefined;
-
   const isTauriRuntime = () => typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 
   let isMaximized = false;
@@ -32,22 +25,19 @@
     await fn(getCurrentWindow());
   };
 
-  // On the main window, minimize and close both just hide to the tray,
-  // matching the Escape key and the global hotkey - this app has no taskbar-
-  // minimized state, it's either open or living in the tray. Routed through
-  // the same `hide_window` command Escape uses (rather than calling the
-  // window API's hide() directly) so Rust's own shown/hidden tracking -
-  // which the hotkey relies on - stays in sync no matter which of these
-  // triggers the hide. Utility windows (Settings, Database Manager) pass
-  // `onMinimize`/`onClose` to really minimize/close themselves instead,
-  // since they aren't the app's single persistent instance.
+  // Minimize and close both just hide to the tray, matching the Escape key
+  // and the global hotkey - this app has no taskbar-minimized state, it's
+  // either open or living in the tray. Routed through the same `hide_window`
+  // command Escape uses (rather than calling the window API's hide()
+  // directly) so Rust's own shown/hidden tracking - which the hotkey relies
+  // on - stays in sync no matter which of these triggers the hide.
   const hide = () => {
     if (!isTauriRuntime()) return;
     void invoke('hide_window');
   };
-  const minimize = () => (onMinimize ? onMinimize() : hide());
+  const minimize = hide;
   const toggleMaximize = () => void withWindow((win) => win.toggleMaximize());
-  const close = () => (onClose ? onClose() : hide());
+  const close = hide;
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -58,7 +48,7 @@
       <path d="M24 13.5v4.5" />
       <path d="M18.5 25.5l4.2 4.2 7-8.4" />
     </svg>
-    <span class="brand-name">{title}</span>
+    <span class="brand-name">FlashPad</span>
   </div>
   <div class="controls">
     <button class="control" on:click={minimize} aria-label="Minimize">
