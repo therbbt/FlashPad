@@ -5,13 +5,25 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Fallback only - matches the "FlashPad Dark" palette. The real palette
+     (any of the FlashPad/Catppuccin options) is applied over these as
+     inline custom properties on <html> by applyPalette() in App.svelte
+     once settings have loaded, which always wins on specificity. This is
+     just so nothing is unstyled/undefined in the narrow window before that
+     runs, or on the off chance it never does (e.g. startup threw first). */
+  --bg: #16161a;
+  --panel: #1e1e22;
+  --panel-2: #28282d;
+  --text: #ecebe7;
+  --muted: #97958d;
+  --border: rgba(255, 255, 255, 0.08);
+  --accent: #5b9bd5;
+  --accent-soft: rgba(91, 155, 213, 0.16);
+  --md-color: #a78bfa;
 }
 
 * { box-sizing: border-box; }
 html, body, #app { margin: 0; width: 100%; height: 100%; overflow: hidden; }
-/* Theme-aware, not hardcoded: --bg/--text are set by App.svelte's global
-   html[data-theme] rules. Anything rendered outside .shell (context menus,
-   modals) relies on these inheriting correctly from the true document root. */
 /* Transparent so the window's shadow margin (see .app-shell) shows the
    desktop through it instead of a solid rectangle - the actual app
    background lives on .app-shell itself, inset from the true window edges. */

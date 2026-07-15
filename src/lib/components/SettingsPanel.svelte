@@ -5,10 +5,15 @@
   import { HotkeyService } from '../services/hotkeyService';
   import { DatabaseService, type AppState } from '../services/databaseService';
   import { BackupService } from '../services/backupService';
+  import { palettesForMode, type Palette } from '../theme/palettes';
   import DatabaseManagerSection from './DatabaseManagerSection.svelte';
 
   export let hotkey: string;
   export let onHotkeyChange: (hotkey: string) => void;
+  export let lightPaletteId: string;
+  export let darkPaletteId: string;
+  export let onLightPaletteChange: (id: string) => void;
+  export let onDarkPaletteChange: (id: string) => void;
   export let onClose: () => void;
   export let onSwitchDatabase: (id: number) => Promise<void>;
   export let onRequestConfirm: (message: string) => Promise<boolean>;
@@ -33,6 +38,33 @@
   let autostart = false;
   let loading = true;
   let error = '';
+
+  // <select>/<option> render as native OS popups on Linux (WebKitGTK), which
+  // ignore page CSS entirely - a custom dropdown is the only way to get
+  // themed colors here, not just a styling workaround.
+  const lightPalettes = palettesForMode('light');
+  const darkPalettes = palettesForMode('dark');
+  let openPaletteDropdown: 'light' | 'dark' | null = null;
+
+  $: currentLightPalette = lightPalettes.find((p) => p.id === lightPaletteId) ?? lightPalettes[0];
+  $: currentDarkPalette = darkPalettes.find((p) => p.id === darkPaletteId) ?? darkPalettes[0];
+
+  const togglePaletteDropdown = (which: 'light' | 'dark') => {
+    openPaletteDropdown = openPaletteDropdown === which ? null : which;
+  };
+
+  const choosePalette = (which: 'light' | 'dark', palette: Palette) => {
+    if (which === 'light') onLightPaletteChange(palette.id);
+    else onDarkPaletteChange(palette.id);
+    openPaletteDropdown = null;
+  };
+
+  const handleDropdownOutsideClick = (event: MouseEvent) => {
+    const target = event.target as HTMLElement;
+    if (!target.closest('.dropdown')) {
+      openPaletteDropdown = null;
+    }
+  };
 
   let ctrlMod = false;
   let altMod = false;
@@ -254,7 +286,7 @@
   });
 </script>
 
-<svelte:window on:keydown={handleKeydown} />
+<svelte:window on:keydown={handleKeydown} on:mousedown={handleDropdownOutsideClick} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="overlay" on:mousedown={handleOutsideClick}>
@@ -297,6 +329,79 @@
             {#if error}
               <p class="error">{error}</p>
             {/if}
+          </section>
+
+          <section class="card">
+            <span class="section-title">Appearance</span>
+            <div class="palette-row">
+              <span>Light theme</span>
+              <div class="dropdown">
+                <button
+                  class="select"
+                  type="button"
+                  on:click={() => togglePaletteDropdown('light')}
+                  aria-haspopup="listbox"
+                  aria-expanded={openPaletteDropdown === 'light'}
+                >
+                  {currentLightPalette.name}
+                  <svg class="caret" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M2.5 3.5L5 6.5L7.5 3.5" />
+                  </svg>
+                </button>
+                {#if openPaletteDropdown === 'light'}
+                  <ul class="dropdown-menu" role="listbox">
+                    {#each lightPalettes as palette (palette.id)}
+                      <li>
+                        <button
+                          class="dropdown-item"
+                          class:active={palette.id === lightPaletteId}
+                          role="option"
+                          aria-selected={palette.id === lightPaletteId}
+                          on:click={() => choosePalette('light', palette)}
+                        >
+                          {palette.name}
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            </div>
+            <div class="palette-row">
+              <span>Dark theme</span>
+              <div class="dropdown">
+                <button
+                  class="select"
+                  type="button"
+                  on:click={() => togglePaletteDropdown('dark')}
+                  aria-haspopup="listbox"
+                  aria-expanded={openPaletteDropdown === 'dark'}
+                >
+                  {currentDarkPalette.name}
+                  <svg class="caret" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M2.5 3.5L5 6.5L7.5 3.5" />
+                  </svg>
+                </button>
+                {#if openPaletteDropdown === 'dark'}
+                  <ul class="dropdown-menu" role="listbox">
+                    {#each darkPalettes as palette (palette.id)}
+                      <li>
+                        <button
+                          class="dropdown-item"
+                          class:active={palette.id === darkPaletteId}
+                          role="option"
+                          aria-selected={palette.id === darkPaletteId}
+                          on:click={() => choosePalette('dark', palette)}
+                        >
+                          {palette.name}
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            </div>
+            <p class="hint">The app switches between these automatically with the light/dark toggle.</p>
           </section>
 
           <section class="card">
@@ -360,7 +465,21 @@
 
             <div class="retention-row">
               <span>Keep last</span>
-              <input class="retention-input" type="number" min="1" bind:value={retentionInput} />
+              <div class="stepper">
+                <button
+                  class="step-btn"
+                  type="button"
+                  disabled={retentionInput <= 1}
+                  on:click={() => (retentionInput = Math.max(1, retentionInput - 1))}
+                  aria-label="Decrease"
+                >
+                  −
+                </button>
+                <input class="retention-input" type="number" min="1" bind:value={retentionInput} />
+                <button class="step-btn" type="button" on:click={() => (retentionInput += 1)} aria-label="Increase">
+                  +
+                </button>
+              </div>
               <span>backups</span>
               <button class="btn" disabled={retentionSaving} on:click={saveRetentionCount}>
                 {retentionSaving ? 'Saving…' : 'Save'}
@@ -510,6 +629,87 @@
     flex-shrink: 0;
   }
 
+  .palette-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    font-size: 0.8rem;
+    color: var(--text);
+    margin-bottom: 0.5rem;
+  }
+
+  .palette-row:last-of-type {
+    margin-bottom: 0.3rem;
+  }
+
+  .dropdown {
+    position: relative;
+  }
+
+  .select {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+    background: var(--panel-2);
+    color: var(--text);
+    font-size: 0.78rem;
+    padding: 0.3rem 0.5rem;
+    cursor: pointer;
+  }
+
+  .select:hover {
+    background: var(--accent-soft, var(--panel-2));
+  }
+
+  .select .caret {
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+
+  .dropdown-menu {
+    position: absolute;
+    top: calc(100% + 0.25rem);
+    right: 0;
+    z-index: 10;
+    min-width: 100%;
+    list-style: none;
+    margin: 0;
+    padding: 0.25rem;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .dropdown-item {
+    display: block;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    white-space: nowrap;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.78rem;
+    border-radius: 0.3rem;
+    cursor: pointer;
+  }
+
+  .dropdown-item:hover {
+    background: var(--panel);
+  }
+
+  .dropdown-item.active {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
   .hotkey-row {
     display: flex;
     align-items: center;
@@ -623,14 +823,65 @@
     margin-left: auto;
   }
 
+  .stepper {
+    display: flex;
+    align-items: stretch;
+  }
+
+  /* Native number-input spin arrows are, like <select>/<option>, rendered
+     as unstylable OS widgets on Linux (WebKitGTK) - hidden here in favor of
+     the explicit .step-btn buttons instead. */
   .retention-input {
-    width: 3rem;
+    appearance: textfield;
+    -webkit-appearance: none;
+    width: 2.4rem;
     text-align: center;
     border: 1px solid var(--border);
-    border-radius: 0.35rem;
+    border-left: 0;
+    border-right: 0;
     background: var(--panel-2);
-    color: inherit;
+    color: var(--text);
     font-size: 0.78rem;
-    padding: 0.25rem 0.2rem;
+    padding: 0.25rem 0.1rem;
+  }
+
+  .retention-input:focus {
+    outline: none;
+  }
+
+  .retention-input::-webkit-outer-spin-button,
+  .retention-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  .step-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.4rem;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .step-btn:first-child {
+    border-radius: 0.35rem 0 0 0.35rem;
+  }
+
+  .step-btn:last-child {
+    border-radius: 0 0.35rem 0.35rem 0;
+  }
+
+  .step-btn:hover:not(:disabled) {
+    background: var(--accent-soft, var(--panel-2));
+  }
+
+  .step-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
 </style>

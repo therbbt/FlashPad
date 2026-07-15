@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { NotesService, type NoteRecord } from './lib/services/notesService';
   import { SettingsService, type FlashPadSettings } from './lib/services/settingsService';
+  import { DEFAULT_DARK_PALETTE_ID, DEFAULT_LIGHT_PALETTE_ID, applyPalette, getPalette } from './lib/theme/palettes';
   import { HotkeyService } from './lib/services/hotkeyService';
   import { DatabaseService, type AppState } from './lib/services/databaseService';
   import TreeNode, { type TreeItem } from './lib/components/TreeNode.svelte';
@@ -52,6 +53,8 @@
   let query = '';
   let status = 'Ready';
   let theme: FlashPadSettings['theme'] = 'dark';
+  let lightPaletteId = DEFAULT_LIGHT_PALETTE_ID;
+  let darkPaletteId = DEFAULT_DARK_PALETTE_ID;
   let isMarkdownActive = false;
   let isLockedActive = false;
   let textarea: HTMLTextAreaElement;
@@ -734,10 +737,31 @@
     }
   };
 
+  // Re-applies whichever palette is assigned to the currently active
+  // light/dark mode - called on startup and any time the mode or either
+  // palette assignment changes, so the visible palette always matches both.
+  const applyActivePalette = () => {
+    const id = theme === 'light' ? lightPaletteId : darkPaletteId;
+    applyPalette(getPalette(id));
+  };
+
   const toggleTheme = () => {
     theme = theme === 'dark' ? 'light' : 'dark';
     document.documentElement.dataset.theme = theme;
     void settingsService.saveTheme(theme);
+    applyActivePalette();
+  };
+
+  const setLightPalette = (id: string) => {
+    lightPaletteId = id;
+    void settingsService.saveLightPalette(id);
+    if (theme === 'light') applyActivePalette();
+  };
+
+  const setDarkPalette = (id: string) => {
+    darkPaletteId = id;
+    void settingsService.saveDarkPalette(id);
+    if (theme === 'dark') applyActivePalette();
   };
 
   const openInsertMenu = () => {
@@ -821,10 +845,21 @@
     expandedNotes = loadExpanded();
     sidebarWidth = loadSidebarWidth();
     try {
-      await databaseService.init();
+      // Loaded and applied ahead of databaseService.init() below,
+      // deliberately in its own try/catch: the visible theme shouldn't
+      // depend on the database being reachable, and the fallback values in
+      // app.css only cover the case where this never runs at all.
       const settings = await settingsService.load();
       theme = settings.theme;
+      lightPaletteId = settings.lightPaletteId;
+      darkPaletteId = settings.darkPaletteId;
       document.documentElement.dataset.theme = theme;
+      applyActivePalette();
+    } catch (err) {
+      console.error('FlashPad failed to load settings', err);
+    }
+    try {
+      await databaseService.init();
       hotkeySetting = await hotkeyService.get();
 
       const appState = await databaseService.getAppState();
@@ -1071,6 +1106,10 @@
   <SettingsPanel
     hotkey={hotkeySetting}
     onHotkeyChange={(next) => (hotkeySetting = next)}
+    {lightPaletteId}
+    {darkPaletteId}
+    onLightPaletteChange={setLightPalette}
+    onDarkPaletteChange={setDarkPalette}
     onClose={() => (settingsOpen = false)}
     onSwitchDatabase={switchToDatabase}
     onRequestConfirm={confirmDialog}
@@ -1102,30 +1141,19 @@
 {/if}
 
 <style>
+  /* --bg/--panel/--panel-2/--text/etc are no longer set here - the active
+     palette (any of the FlashPad or Catppuccin options, not just "light" or
+     "dark") is applied at runtime via applyPalette() in the script above,
+     since a static stylesheet rule can't express "whichever of six palettes
+     is currently selected". color-scheme (native scrollbars/form controls)
+     only ever needs to follow light/dark mode though, so that alone still
+     lives here, keyed off the same data-theme attribute. */
   :global(html[data-theme='light']) {
     color-scheme: light;
-    --bg: #faf8f4;
-    --panel: #fefdfb;
-    --panel-2: #f0ece4;
-    --text: #211d18;
-    --muted: #6b6259;
-    --border: rgba(33, 29, 24, 0.1);
-    --accent: #2563eb;
-    --accent-soft: rgba(37, 99, 235, 0.14);
-    --md-color: #7c3aed;
   }
 
   :global(html:not([data-theme='light'])) {
     color-scheme: dark;
-    --bg: #16161a;
-    --panel: #1e1e22;
-    --panel-2: #28282d;
-    --text: #ecebe7;
-    --muted: #97958d;
-    --border: rgba(255,255,255,0.08);
-    --accent: #5b9bd5;
-    --accent-soft: rgba(91, 155, 213, 0.18);
-    --md-color: #a78bfa;
   }
 
   :global(body.resizing-sidebar) {
