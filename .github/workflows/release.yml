@@ -1,0 +1,87 @@
+name: Release
+
+# Triggered by pushing a version tag (e.g. `git tag v1.2.0 && git push origin
+# v1.2.0`) - builds signed installers for Windows and Linux and publishes
+# them as a draft GitHub Release. The release is created as a draft
+# deliberately: review/edit the release notes and hit "Publish" yourself
+# once you're happy with it - the in-app updater only ever sees published
+# (non-draft) releases, so nothing reaches users until you do.
+#
+# Requires two repository secrets before this can sign anything:
+#   TAURI_SIGNING_PRIVATE_KEY          - see README/docs for how to generate
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD - the password used when generating it
+# Without these set, tauri-action still builds but the artifacts won't be
+# signed, and the in-app updater will refuse them.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'FlashPad ${{ github.ref_name }}'
+          releaseDraft: true
+          generateReleaseNotes: true
+
+  release-linux:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+    steps:
+      # Same Fedora-container approach as build-linux.yml, so the .deb/.rpm
+      # here are built against the same dnf package set a real Fedora user
+      # would have - see that workflow for why.
+      - name: Install system dependencies
+        run: |
+          dnf install -y \
+            git gcc gcc-c++ make pkgconf-pkg-config \
+            glib2-devel gtk3-devel webkit2gtk4.1-devel javascriptcoregtk4.1-devel \
+            librsvg2-devel libappindicator-gtk3-devel \
+            rpm-build file curl
+
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'FlashPad ${{ github.ref_name }}'
+          releaseDraft: true
+          generateReleaseNotes: true
+          args: --bundles deb,rpm

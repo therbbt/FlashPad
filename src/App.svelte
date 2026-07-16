@@ -15,6 +15,9 @@
   import ConfirmDialog from './lib/components/ConfirmDialog.svelte';
   import TitleBar from './lib/components/TitleBar.svelte';
   import ResizeHandles from './lib/components/ResizeHandles.svelte';
+  import UpdateToast from './lib/components/UpdateToast.svelte';
+  import UpdateDialog from './lib/components/UpdateDialog.svelte';
+  import { check as checkForUpdate, type Update } from '@tauri-apps/plugin-updater';
 
   const notesService = new NotesService();
   const settingsService = new SettingsService();
@@ -39,6 +42,13 @@
   let shortcutsOpen = false;
   let settingsOpen = false;
   let markdownHelpOpen = false;
+  // Populated once, from the single startup check in onMount (never
+  // polled/re-checked while running) - null means either no update was
+  // found or the check hasn't resolved (or failed) yet.
+  let availableUpdate: Update | null = null;
+  let updateDetailsOpen = false;
+  let dismissedUpdateVersion: string | null = null;
+  $: showUpdateToast = availableUpdate !== null && availableUpdate.version !== dismissedUpdateVersion;
   // Set when the configured active database is unreachable at startup (e.g.
   // an unmounted sync folder) - replaces the notes UI with an error view
   // instead of silently falling through to an empty note list.
@@ -764,6 +774,26 @@
     if (theme === 'dark') applyActivePalette();
   };
 
+  // Checked once on startup only (called from onMount, never polled/re-run
+  // while the app is open) - failures (no internet, GitHub unreachable,
+  // etc.) are swallowed silently since a missed check just means no
+  // indicator shows, never anything that blocks using the app.
+  const checkForAppUpdate = async () => {
+    try {
+      const update = await checkForUpdate();
+      if (update) availableUpdate = update;
+    } catch (err) {
+      console.error('Update check failed', err);
+    }
+  };
+
+  const dismissUpdate = () => {
+    if (!availableUpdate) return;
+    dismissedUpdateVersion = availableUpdate.version;
+    void settingsService.saveDismissedUpdateVersion(availableUpdate.version);
+    updateDetailsOpen = false;
+  };
+
   const openInsertMenu = () => {
     if (!insertButton) return;
     const rect = insertButton.getBoundingClientRect();
@@ -833,7 +863,7 @@
     }
 
     if (event.key === 'Escape') {
-      if (contextMenu || shortcutsOpen || settingsOpen || markdownHelpOpen || confirmState) return;
+      if (contextMenu || shortcutsOpen || settingsOpen || markdownHelpOpen || confirmState || updateDetailsOpen) return;
       event.preventDefault();
       void invoke('hide_window').catch(() => {
         status = 'Window hidden';
@@ -853,6 +883,7 @@
       theme = settings.theme;
       lightPaletteId = settings.lightPaletteId;
       darkPaletteId = settings.darkPaletteId;
+      dismissedUpdateVersion = settings.dismissedUpdateVersion;
       document.documentElement.dataset.theme = theme;
       applyActivePalette();
     } catch (err) {
@@ -880,6 +911,8 @@
       // invisible if something above threw.
       requestAnimationFrame(() => requestAnimationFrame(() => void invoke('frontend_ready').catch(() => {})));
     }
+
+    void checkForAppUpdate();
 
     window.addEventListener('keydown', handleKeydown);
     return () => window.removeEventListener('keydown', handleKeydown);
@@ -1138,6 +1171,18 @@
       confirmState = null;
     }}
   />
+{/if}
+
+{#if showUpdateToast && !updateDetailsOpen}
+  <UpdateToast
+    version={availableUpdate?.version ?? ''}
+    onViewDetails={() => (updateDetailsOpen = true)}
+    onDismiss={dismissUpdate}
+  />
+{/if}
+
+{#if updateDetailsOpen && availableUpdate}
+  <UpdateDialog update={availableUpdate} onDismiss={dismissUpdate} />
 {/if}
 
 <style>

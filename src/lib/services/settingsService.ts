@@ -4,6 +4,10 @@ export interface FlashPadSettings {
   theme: 'dark' | 'light';
   lightPaletteId: string;
   darkPaletteId: string;
+  // Version the user last dismissed the update notification for ("Not
+  // now"), so the check on the next startup doesn't nag about the same
+  // release again - only a newer version reopens the toast.
+  dismissedUpdateVersion: string | null;
 }
 
 const STORAGE_KEY = 'flashpad.settings';
@@ -12,6 +16,7 @@ const DEFAULTS: FlashPadSettings = {
   theme: 'dark',
   lightPaletteId: DEFAULT_LIGHT_PALETTE_ID,
   darkPaletteId: DEFAULT_DARK_PALETTE_ID,
+  dismissedUpdateVersion: null,
 };
 
 export class SettingsService {
@@ -25,6 +30,7 @@ export class SettingsService {
       theme: parsed.theme ?? DEFAULTS.theme,
       lightPaletteId: parsed.lightPaletteId ?? DEFAULTS.lightPaletteId,
       darkPaletteId: parsed.darkPaletteId ?? DEFAULTS.darkPaletteId,
+      dismissedUpdateVersion: parsed.dismissedUpdateVersion ?? DEFAULTS.dismissedUpdateVersion,
     };
     return this.cached;
   }
@@ -51,5 +57,9 @@ export class SettingsService {
 
   async saveDarkPalette(darkPaletteId: string): Promise<void> {
     await this.save({ darkPaletteId });
+  }
+
+  async saveDismissedUpdateVersion(version: string): Promise<void> {
+    await this.save({ dismissedUpdateVersion: version });
   }
 }
