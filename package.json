@@ -1,7 +1,7 @@
 {
   "name": "flashpad",
   "private": true,
-  "version": "0.8.4",
+  "version": "0.8.5",
   "type": "module",
   "description": "Global-hotkey quick-notes desktop app",
   "author": "therbbt",
