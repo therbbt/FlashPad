@@ -45,6 +45,13 @@ jobs:
         # specifically, the .rpm is what actually matters - skip the
         # appimage bundle entirely rather than continuing to fight
         # linuxdeploy's environment requirements here.
+        # tauri.conf.json has createUpdaterArtifacts + a real pubkey now, so
+        # every `tauri build` tries to sign - these secrets have to be set
+        # here too, not just in release.yml, or this smoke-test build fails
+        # after bundling with "public key found, but no private key".
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --bundles deb,rpm
 
       - name: Upload packages

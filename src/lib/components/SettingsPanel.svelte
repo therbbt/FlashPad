@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { getVersion } from '@tauri-apps/api/app';
   import { open, save } from '@tauri-apps/plugin-dialog';
   import { AutostartService } from '../services/autostartService';
   import { HotkeyService } from '../services/hotkeyService';
@@ -38,6 +39,7 @@
   let autostart = false;
   let loading = true;
   let error = '';
+  let appVersion = '';
 
   // <select>/<option> render as native OS popups on Linux (WebKitGTK), which
   // ignore page CSS entirely - a custom dropdown is the only way to get
@@ -274,6 +276,7 @@
   onMount(() => {
     parseHotkey(hotkey);
     void loadDatabaseSection();
+    void getVersion().then((v) => (appVersion = v));
     (async () => {
       try {
         autostart = await autostartService.isEnabled();
@@ -501,6 +504,9 @@
         </div>
       {/if}
     </div>
+    {#if appVersion}
+      <footer class="version-footer">FlashPad v{appVersion}</footer>
+    {/if}
   </div>
 </div>
 
@@ -592,6 +598,15 @@
     flex: 1;
     overflow: auto;
     padding: 0.75rem;
+  }
+
+  .version-footer {
+    flex-shrink: 0;
+    text-align: center;
+    font-size: 0.68rem;
+    color: var(--muted);
+    padding: 0.4rem 0;
+    border-top: 1px solid var(--border);
   }
 
   .pane {
