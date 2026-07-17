@@ -794,6 +794,19 @@
     updateDetailsOpen = false;
   };
 
+  // Manual "Check for updates" from Settings - unlike the silent startup
+  // check, errors are left to propagate so Settings can show them, and the
+  // dialog (with the changelog) opens immediately on top of Settings if
+  // something is found, rather than waiting to be clicked from a toast.
+  const checkForUpdateManually = async (): Promise<Update | null> => {
+    const update = await checkForUpdate();
+    if (update) {
+      availableUpdate = update;
+      updateDetailsOpen = true;
+    }
+    return update;
+  };
+
   const openInsertMenu = () => {
     if (!insertButton) return;
     const rect = insertButton.getBoundingClientRect();
@@ -1143,6 +1156,7 @@
     {darkPaletteId}
     onLightPaletteChange={setLightPalette}
     onDarkPaletteChange={setDarkPalette}
+    onCheckForUpdate={checkForUpdateManually}
     onClose={() => (settingsOpen = false)}
     onSwitchDatabase={switchToDatabase}
     onRequestConfirm={confirmDialog}

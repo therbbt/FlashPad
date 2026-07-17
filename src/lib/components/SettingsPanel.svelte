@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { getVersion } from '@tauri-apps/api/app';
   import { open, save } from '@tauri-apps/plugin-dialog';
+  import type { Update } from '@tauri-apps/plugin-updater';
   import { AutostartService } from '../services/autostartService';
   import { HotkeyService } from '../services/hotkeyService';
   import { DatabaseService, type AppState } from '../services/databaseService';
@@ -18,6 +19,11 @@
   export let onClose: () => void;
   export let onSwitchDatabase: (id: number) => Promise<void>;
   export let onRequestConfirm: (message: string) => Promise<boolean>;
+  // Runs the same check the startup flow uses. If it finds an update,
+  // App.svelte takes over (opens the update dialog with the changelog) -
+  // this component only needs the result to show "you're up to date" when
+  // there isn't one.
+  export let onCheckForUpdate: () => Promise<Update | null>;
   // Called after an import replaces the active database's contents, so
   // App.svelte can reload notes and reset note-scoped UI state. NOT called
   // after a location change - the data itself is unchanged, only where it
@@ -40,6 +46,25 @@
   let loading = true;
   let error = '';
   let appVersion = '';
+  let checkingForUpdate = false;
+  let updateCheckMessage = '';
+  let updateCheckError = '';
+
+  const checkForUpdates = async () => {
+    checkingForUpdate = true;
+    updateCheckMessage = '';
+    updateCheckError = '';
+    try {
+      const update = await onCheckForUpdate();
+      // If one was found, App.svelte already opens the update dialog with
+      // the changelog on top of this panel - nothing more to show here.
+      if (!update) updateCheckMessage = "You're up to date.";
+    } catch (err) {
+      updateCheckError = err instanceof Error ? err.message : 'Failed to check for updates.';
+    } finally {
+      checkingForUpdate = false;
+    }
+  };
 
   // <select>/<option> render as native OS popups on Linux (WebKitGTK), which
   // ignore page CSS entirely - a custom dropdown is the only way to get
@@ -435,6 +460,22 @@
               <p class="error">{hotkeyError}</p>
             {/if}
           </section>
+
+          <section class="card">
+            <span class="section-title">Updates</span>
+            <div class="update-row">
+              <span>{appVersion ? `Version ${appVersion}` : 'FlashPad'}</span>
+              <button class="btn" disabled={checkingForUpdate} on:click={checkForUpdates}>
+                {checkingForUpdate ? 'Checking…' : 'Check for updates'}
+              </button>
+            </div>
+            {#if updateCheckMessage}
+              <p class="saved-hint">{updateCheckMessage}</p>
+            {/if}
+            {#if updateCheckError}
+              <p class="error">{updateCheckError}</p>
+            {/if}
+          </section>
         </div>
       {:else}
         <div class="pane">
@@ -504,9 +545,6 @@
         </div>
       {/if}
     </div>
-    {#if appVersion}
-      <footer class="version-footer">FlashPad v{appVersion}</footer>
-    {/if}
   </div>
 </div>
 
@@ -598,15 +636,6 @@
     flex: 1;
     overflow: auto;
     padding: 0.75rem;
-  }
-
-  .version-footer {
-    flex-shrink: 0;
-    text-align: center;
-    font-size: 0.68rem;
-    color: var(--muted);
-    padding: 0.4rem 0;
-    border-top: 1px solid var(--border);
   }
 
   .pane {
@@ -836,6 +865,15 @@
 
   .retention-row .btn {
     margin-left: auto;
+  }
+
+  .update-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    font-size: 0.8rem;
+    color: var(--text);
   }
 
   .stepper {

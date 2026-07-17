@@ -79,6 +79,36 @@ jobs:
           releaseDraft: true
           generateReleaseNotes: true
 
+      - name: Drop the "_en-US" locale suffix from the MSI's filename
+        # tauri-bundler hardcodes {product}_{version}_{arch}_{language} for
+        # the msi with no config to omit the locale segment, so this is a
+        # post-upload rename instead: swap the just-uploaded asset for a
+        # renamed copy, then patch the windows-x86_64 URL(s) inside the
+        # release's already-uploaded latest.json to match. The signature
+        # embedded in latest.json doesn't change - it's the file's content
+        # hash, not its name, so only the url fields need fixing.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          OLD_MSI=$(basename "$(ls src-tauri/target/release/bundle/msi/*.msi)")
+          NEW_MSI="${OLD_MSI/_en-US/}"
+
+          if [ "$OLD_MSI" = "$NEW_MSI" ]; then
+            echo "No _en-US suffix found in $OLD_MSI, nothing to rename"
+            exit 0
+          fi
+
+          cp "src-tauri/target/release/bundle/msi/$OLD_MSI" "src-tauri/target/release/bundle/msi/$NEW_MSI"
+          gh release upload "$TAG" "src-tauri/target/release/bundle/msi/$NEW_MSI" --clobber
+          gh release delete-asset "$TAG" "$OLD_MSI" --yes
+
+          gh release download "$TAG" --pattern latest.json --output latest.json --clobber
+          sed -i "s#${OLD_MSI}#${NEW_MSI}#g" latest.json
+          gh release upload "$TAG" latest.json --clobber
+
   release-linux:
     needs: check-version
     runs-on: ubuntu-latest

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Update } from '@tauri-apps/plugin-updater';
   import { relaunch } from '@tauri-apps/plugin-process';
+  import MarkdownEditor from './MarkdownEditor.svelte';
 
   export let update: Update;
   // Covers both "Not now" and closing the dialog any other way (X, Escape,
@@ -85,7 +86,9 @@
     {/if}
 
     {#if update.body}
-      <div class="notes">{update.body}</div>
+      <div class="notes">
+        <MarkdownEditor content={update.body} noteId={0} onUpdate={() => {}} editable={false} />
+      </div>
     {:else}
       <p class="notes empty">No release notes provided.</p>
     {/if}
@@ -182,22 +185,25 @@
 
   .notes {
     flex: 1;
+    display: flex;
+    flex-direction: column;
     min-height: 3rem;
     max-height: 40vh;
     overflow: auto;
-    white-space: pre-wrap;
-    word-wrap: break-word;
     background: var(--panel-2);
     border: 1px solid var(--border);
     border-radius: 0.4rem;
-    padding: 0.6rem 0.7rem;
     font-size: 0.78rem;
-    line-height: 1.5;
     color: var(--text);
     margin: 0 0 0.6rem;
   }
 
-  .notes.empty {
+  .notes :global(.markdown-editor .tiptap) {
+    padding: 0.6rem 0.7rem;
+  }
+
+  p.notes.empty {
+    padding: 0.6rem 0.7rem;
     color: var(--muted);
   }
 
