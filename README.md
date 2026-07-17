@@ -15,8 +15,16 @@ jot something down in a tree of notes, and hide it again.
 - **Quick inserts** — dividers, timestamps, and datelines via keyboard
   shortcuts.
 - **Note locking** — protect a note from accidental edits.
-- **Light/dark theme** and **autostart on login**.
-- **Local storage** — notes are persisted locally via a SQLite-backed store.
+- **Themeable** — light/dark mode, each with its own independently
+  selectable color palette (FlashPad's own light/dark looks, or Catppuccin
+  Latte/Frappé/Macchiato/Mocha).
+- **Autostart on login**.
+- **Local storage** — notes are persisted locally via a SQLite-backed store;
+  manage multiple databases, switch between them, and rely on automatic
+  local backups with import/export.
+- **Automatic updates** — checks GitHub Releases on startup and shows an
+  unobtrusive notification (with changelog) when a new version is
+  available. Nothing downloads until you confirm.
 
 ## Keyboard Shortcuts
 
@@ -42,7 +50,7 @@ jot something down in a tree of notes, and hide it again.
 - [Tauri 2](https://tauri.app/) (Rust) for the desktop shell
 - [Svelte 5](https://svelte.dev/) + [Vite](https://vitejs.dev/) + TypeScript for the frontend
 - [Tiptap](https://tiptap.dev/) for markdown editing
-- Tauri plugins: `autostart`, `global-shortcut`, `window-state`, `store`, `dialog`
+- Tauri plugins: `autostart`, `global-shortcut`, `window-state`, `dialog`, `updater`, `process`
 
 ## Getting Started
 
