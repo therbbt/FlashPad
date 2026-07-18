@@ -18,6 +18,7 @@
   import UpdateToast from './lib/components/UpdateToast.svelte';
   import UpdateDialog from './lib/components/UpdateDialog.svelte';
   import { check as checkForUpdate, type Update } from '@tauri-apps/plugin-updater';
+  import { open as openDialog } from '@tauri-apps/plugin-dialog';
 
   const notesService = new NotesService();
   const settingsService = new SettingsService();
@@ -408,6 +409,31 @@
     selectNote(created);
     focusedKey = `note:${created.id}`;
     status = 'New note';
+  };
+
+  // Imports a FlashNote export (a different, unrelated app): folders become
+  // subnotes, .txt files become notes, and a "<folder>.txt" sibling next to
+  // a folder becomes that subnote's own content. The picked folder's own
+  // subfolders/files land as new top-level notes directly - no extra
+  // wrapper note for the picked folder itself.
+  //
+  // Triggered from Settings, which shows its own inline "Importing…"/result
+  // state (same pattern as the "Check for updates" button) rather than this
+  // reporting through the main window's status bar - errors are left to
+  // propagate so Settings can display them. Returns null if the user
+  // cancelled the folder picker, distinct from a real failure.
+  const importFromFolder = async (): Promise<{ importedCount: number } | null> => {
+    const picked = await openDialog({ directory: true, title: 'Select a FlashNote export folder' });
+    if (typeof picked !== 'string') return null;
+
+    const summary = await notesService.importFlashNoteFolder(picked);
+    await refreshNotes();
+    const imported = summary.firstNoteId != null ? notes.find((n) => n.id === summary.firstNoteId) : undefined;
+    if (imported) {
+      selectNote(imported);
+      focusedKey = `note:${imported.id}`;
+    }
+    return { importedCount: summary.importedCount };
   };
 
   // Only used once, when the database is empty (first launch / fresh
@@ -1157,6 +1183,7 @@
     onLightPaletteChange={setLightPalette}
     onDarkPaletteChange={setDarkPalette}
     onCheckForUpdate={checkForUpdateManually}
+    onImportFromFolder={importFromFolder}
     onClose={() => (settingsOpen = false)}
     onSwitchDatabase={switchToDatabase}
     onRequestConfirm={confirmDialog}
