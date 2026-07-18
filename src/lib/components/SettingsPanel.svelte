@@ -24,6 +24,10 @@
   // this component only needs the result to show "you're up to date" when
   // there isn't one.
   export let onCheckForUpdate: () => Promise<Update | null>;
+  // Opens the folder picker and imports a FlashNote export. Resolves to
+  // null if the user cancelled the picker (not an error), or throws on a
+  // real failure.
+  export let onImportFromFolder: () => Promise<{ importedCount: number } | null>;
   // Called after an import replaces the active database's contents, so
   // App.svelte can reload notes and reset note-scoped UI state. NOT called
   // after a location change - the data itself is unchanged, only where it
@@ -63,6 +67,26 @@
       updateCheckError = err instanceof Error ? err.message : 'Failed to check for updates.';
     } finally {
       checkingForUpdate = false;
+    }
+  };
+
+  let importingNotes = false;
+  let importMessage = '';
+  let importError = '';
+
+  const importNotes = async () => {
+    importingNotes = true;
+    importMessage = '';
+    importError = '';
+    try {
+      const result = await onImportFromFolder();
+      // null means the user cancelled the folder picker - not an error, no
+      // message needed either.
+      if (result) importMessage = `Imported ${result.importedCount} note${result.importedCount === 1 ? '' : 's'}.`;
+    } catch (err) {
+      importError = err instanceof Error ? err.message : 'Import failed.';
+    } finally {
+      importingNotes = false;
     }
   };
 
@@ -541,6 +565,23 @@
           <section class="card">
             <span class="section-title">All databases</span>
             <DatabaseManagerSection onSwitch={onSwitchDatabase} {onRequestConfirm} />
+          </section>
+
+          <section class="card">
+            <span class="section-title">Import notes</span>
+            <p class="hint">
+              Import a FlashNote export into the active database - folders become subnotes, .txt files become
+              notes.
+            </p>
+            <button class="btn" disabled={importingNotes} on:click={importNotes}>
+              {importingNotes ? 'Importing…' : 'Import from folder…'}
+            </button>
+            {#if importMessage}
+              <p class="saved-hint">{importMessage}</p>
+            {/if}
+            {#if importError}
+              <p class="error">{importError}</p>
+            {/if}
           </section>
         </div>
       {/if}

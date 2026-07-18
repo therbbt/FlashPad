@@ -207,6 +207,7 @@ fn main() {
             notes::move_note,
             notes::duplicate_note,
             notes::reorder_note,
+            notes::import_flashnote_folder,
             profiles::get_app_state,
             profiles::list_databases,
             profiles::create_database,

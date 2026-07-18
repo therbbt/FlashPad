@@ -12,6 +12,11 @@ export interface NoteRecord {
   sortOrder: number;
 }
 
+export interface ImportSummary {
+  importedCount: number;
+  firstNoteId: number | null;
+}
+
 const STORAGE_KEY = 'flashpad.notes';
 
 const isTauriRuntime = () => typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
@@ -130,6 +135,15 @@ export class NotesService {
       return notes.find((item) => item.id === id) as NoteRecord;
     }
     return await invoke<NoteRecord>('reorder_note', { id, parentId, beforeId });
+  }
+
+  // Reads arbitrary folders from disk, so there's no meaningful browser
+  // fallback the way the other methods have one for `npm run dev` preview.
+  async importFlashNoteFolder(path: string): Promise<ImportSummary> {
+    if (!isTauriRuntime()) {
+      throw new Error('Importing requires the desktop app');
+    }
+    return await invoke<ImportSummary>('import_flashnote_folder', { path });
   }
 
   async search(query: string): Promise<NoteRecord[]> {
