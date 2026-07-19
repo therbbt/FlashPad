@@ -22,6 +22,10 @@
     editor?.chain().focus().insertContent(text).run();
   }
 
+  export function focus() {
+    editor?.chain().focus().run();
+  }
+
   onMount(() => {
     editor = new Editor({
       element,

@@ -38,6 +38,7 @@
     {
       label: 'Navigation',
       items: [
+        ['Alt+T', 'Toggle focus between the editor and the notes menu'],
         ['Enter', "Open the focused note, toggling its subnotes if it has any"],
         ['↑ / ↓', 'Move through the tree or search results'],
         ['← / →', "Collapse / expand the focused note's subnotes"],
@@ -73,31 +74,29 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="overlay" on:mousedown={handleOutsideClick}>
   <div class="panel" bind:this={panelEl} role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
-    <div class="panel-inner">
-      <header>
-        <h2>Keyboard shortcuts</h2>
-        <button class="close" on:click={onClose} aria-label="Close">
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-            <path d="M2 2l12 12M14 2L2 14" />
-          </svg>
-        </button>
-      </header>
-      <table>
-        {#each shortcutGroups as group (group.label)}
-          <tbody>
-            <tr class="group-row">
-              <th colspan="2">{group.label}</th>
+    <header>
+      <h2>Keyboard shortcuts</h2>
+      <button class="close" on:click={onClose} aria-label="Close">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+          <path d="M2 2l12 12M14 2L2 14" />
+        </svg>
+      </button>
+    </header>
+    <table>
+      {#each shortcutGroups as group (group.label)}
+        <tbody>
+          <tr class="group-row">
+            <th colspan="2">{group.label}</th>
+          </tr>
+          {#each group.items as [keys, description] (keys)}
+            <tr>
+              <td><kbd>{keys}</kbd></td>
+              <td>{description}</td>
             </tr>
-            {#each group.items as [keys, description] (keys)}
-              <tr>
-                <td><kbd>{keys}</kbd></td>
-                <td>{description}</td>
-              </tr>
-            {/each}
-          </tbody>
-        {/each}
-      </table>
-    </div>
+          {/each}
+        </tbody>
+      {/each}
+    </table>
   </div>
 </div>
 
@@ -120,13 +119,6 @@
     border: 1px solid var(--border);
     border-radius: 0.6rem;
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
-    /* Puts the scrollbar on the left edge of the panel instead of the
-       right - panel-inner resets back to ltr so text/layout read normally. */
-    direction: rtl;
-  }
-
-  .panel-inner {
-    direction: ltr;
     padding: 0.85rem 1rem;
   }
 
