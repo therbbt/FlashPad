@@ -19,6 +19,7 @@
   import UpdateDialog from './lib/components/UpdateDialog.svelte';
   import { check as checkForUpdate, type Update } from '@tauri-apps/plugin-updater';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
+  import { writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
 
   const notesService = new NotesService();
   const settingsService = new SettingsService();
@@ -74,6 +75,9 @@
   let insertButton: HTMLButtonElement;
   let notesButton: HTMLButtonElement;
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  let noteInfoOpen = false;
+  let copiedField: 'created' | 'updated' | null = null;
+  let copiedFieldTimer: ReturnType<typeof setTimeout> | undefined;
 
   // ---------- persistence helpers ----------
 
@@ -205,9 +209,9 @@
   $: if (visibleFlat.length && !visibleFlat.some((v) => v.key === focusedKey)) {
     focusedKey = visibleFlat[0].key;
   }
-  $: currentPath = activeParentId != null ? (notes.find((n) => n.id === activeParentId) ? notePath(notes.find((n) => n.id === activeParentId)!) : 'Notes') : 'Notes';
   $: searchMatchIndex = isSearching ? searchResults.findIndex((n) => n.id === selectedId) : -1;
   $: selectedNoteCreatedAt = notes.find((n) => n.id === selectedId)?.createdAt ?? null;
+  $: selectedNoteUpdatedAt = notes.find((n) => n.id === selectedId)?.updatedAt ?? null;
 
   // ---------- data loading ----------
 
@@ -591,6 +595,34 @@
     status = 'Cut';
   };
 
+  const toggleNoteInfo = () => {
+    noteInfoOpen = !noteInfoOpen;
+  };
+
+  const handleNoteInfoOutsideClick = (event: MouseEvent) => {
+    const target = event.target as HTMLElement;
+    if (!target.closest('.note-info')) {
+      noteInfoOpen = false;
+    }
+  };
+
+  // Writes to the real OS clipboard (via tauri-plugin-clipboard-manager),
+  // unlike copyNote/cutNote above which are FlashPad's own internal
+  // note-move clipboard - this is the only place the two ever overlap.
+  // Briefly swaps the clicked field's copy icon for a checkmark instead of
+  // routing through the footer status text, since the popover is already
+  // showing the value right there - no need to look away to confirm it copied.
+  const copyNoteInfoField = async (field: 'created' | 'updated', value: string) => {
+    try {
+      await writeClipboardText(value.replace('T', ' '));
+      copiedField = field;
+      if (copiedFieldTimer) clearTimeout(copiedFieldTimer);
+      copiedFieldTimer = setTimeout(() => (copiedField = null), 1200);
+    } catch (err) {
+      status = err instanceof Error ? err.message : 'Failed to copy';
+    }
+  };
+
   const pasteNote = async (targetParentId: number | null) => {
     if (!clipboard) return;
     const { id, mode } = clipboard;
@@ -954,7 +986,11 @@
     void checkForAppUpdate();
 
     window.addEventListener('keydown', handleKeydown);
-    return () => window.removeEventListener('keydown', handleKeydown);
+    window.addEventListener('mousedown', handleNoteInfoOutsideClick);
+    return () => {
+      window.removeEventListener('keydown', handleKeydown);
+      window.removeEventListener('mousedown', handleNoteInfoOutsideClick);
+    };
   });
 </script>
 
@@ -1084,15 +1120,94 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <header class="topbar" on:contextmenu|preventDefault={openEditorMenu}>
       <div class="title-block">
-        <input bind:value={title} class="title" placeholder="Untitled" readonly={isLockedActive} on:input={handleTitleInput} />
-        <span class="breadcrumb">{currentPath}</span>
+        <input
+          bind:value={title}
+          class="title"
+          placeholder="Untitled"
+          readonly={isLockedActive}
+          on:input={handleTitleInput}
+        />
       </div>
-      {#if isLockedActive}
-        <svg class="icon lock-indicator" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-label="Locked">
-          <rect x="3.5" y="7" width="9" height="7" rx="1.2" />
-          <path d="M5.5 7V4.5a2.5 2.5 0 0 1 5 0V7" />
-        </svg>
-      {/if}
+      <div class="header-meta">
+        {#if selectedId != null}
+          <div class="note-info">
+            <button
+              class="info-btn"
+              type="button"
+              on:click|stopPropagation={toggleNoteInfo}
+              aria-haspopup="dialog"
+              aria-expanded={noteInfoOpen}
+              aria-label="Note info"
+            >
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="8" cy="8" r="6.5" />
+                <path d="M8 7.2v4.3" />
+                <circle cx="8" cy="4.7" r="0.15" fill="currentColor" />
+              </svg>
+            </button>
+            {#if noteInfoOpen}
+              <div class="note-info-popover">
+                {#if selectedNoteCreatedAt}
+                  <div class="note-info-row">
+                    <div class="note-info-text">
+                      <span class="note-info-label">Created</span>
+                      <span class="note-info-value">{selectedNoteCreatedAt.replace('T', ' ')}</span>
+                    </div>
+                    <button
+                      class="note-info-copy"
+                      type="button"
+                      on:click={() => selectedNoteCreatedAt && copyNoteInfoField('created', selectedNoteCreatedAt)}
+                      aria-label="Copy created date"
+                    >
+                      {#if copiedField === 'created'}
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M3 8.5L6.5 12L13 4.5" />
+                        </svg>
+                      {:else}
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                          <rect x="5.5" y="5.5" width="8" height="8" rx="1" />
+                          <path d="M3 10.5V3.5a1 1 0 0 1 1-1H10" />
+                        </svg>
+                      {/if}
+                    </button>
+                  </div>
+                {/if}
+                {#if selectedNoteUpdatedAt}
+                  <div class="note-info-row">
+                    <div class="note-info-text">
+                      <span class="note-info-label">Updated</span>
+                      <span class="note-info-value">{selectedNoteUpdatedAt.replace('T', ' ')}</span>
+                    </div>
+                    <button
+                      class="note-info-copy"
+                      type="button"
+                      on:click={() => selectedNoteUpdatedAt && copyNoteInfoField('updated', selectedNoteUpdatedAt)}
+                      aria-label="Copy updated date"
+                    >
+                      {#if copiedField === 'updated'}
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M3 8.5L6.5 12L13 4.5" />
+                        </svg>
+                      {:else}
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                          <rect x="5.5" y="5.5" width="8" height="8" rx="1" />
+                          <path d="M3 10.5V3.5a1 1 0 0 1 1-1H10" />
+                        </svg>
+                      {/if}
+                    </button>
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        {/if}
+        {#if isLockedActive}
+          <svg class="icon lock-indicator" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-label="Locked">
+            <rect x="3.5" y="7" width="9" height="7" rx="1.2" />
+            <path d="M5.5 7V4.5a2.5 2.5 0 0 1 5 0V7" />
+          </svg>
+        {/if}
+      </div>
     </header>
 
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1154,11 +1269,8 @@
       >
         Markdown
       </button>
-      <div class="status-group">
+      <div class="footer-right">
         <span class="status">{status}</span>
-        {#if selectedNoteCreatedAt}
-          <span class="created-hint">{selectedNoteCreatedAt.replace('T', ' ')}</span>
-        {/if}
       </div>
     </footer>
   </section>
@@ -1462,14 +1574,108 @@
     outline: none;
   }
 
-  .breadcrumb {
-    color: var(--muted);
-    font-size: 0.7rem;
+  .header-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
   }
 
   .lock-indicator {
     flex-shrink: 0;
     color: var(--muted);
+  }
+
+  .note-info {
+    position: relative;
+  }
+
+  .info-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--muted);
+    padding: 0;
+  }
+
+  .info-btn:hover,
+  .info-btn[aria-expanded='true'] {
+    background: var(--panel-2);
+    color: var(--text);
+  }
+
+  .note-info-popover {
+    position: absolute;
+    top: calc(100% + 0.35rem);
+    right: 0;
+    z-index: 10;
+    width: max-content;
+    min-width: 11rem;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    padding: 0.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .note-info-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.3rem 0.4rem;
+    border-radius: 0.35rem;
+  }
+
+  .note-info-row:hover {
+    background: var(--panel);
+  }
+
+  .note-info-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.05rem;
+    min-width: 0;
+    margin-right: auto;
+  }
+
+  .note-info-label {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--muted);
+  }
+
+  .note-info-value {
+    font-size: 0.76rem;
+    color: var(--text);
+    white-space: nowrap;
+  }
+
+  .note-info-copy {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+    background: var(--panel);
+    color: var(--muted);
+    padding: 0;
+  }
+
+  .note-info-copy:hover {
+    color: var(--accent);
+    border-color: var(--accent);
   }
 
   .md-toggle {
@@ -1592,14 +1798,14 @@
     text-align: center;
   }
 
-  .status-group {
+  .footer-right {
     display: flex;
     align-items: center;
-    gap: 0.35rem;
+    gap: 0.6rem;
     margin-left: auto;
   }
 
-  .created-hint {
+  .status {
     font-size: 0.72rem;
     color: var(--muted);
     white-space: nowrap;

@@ -1,6 +1,6 @@
 [package]
 name = "flashpad"
-version = "0.8.6"
+version = "0.8.7"
 edition = "2021"
 authors = ["therbbt"]
 description = "Global-hotkey quick-notes desktop app"
@@ -21,6 +21,7 @@ chrono = "0.4"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 regex = "1"
+tauri-plugin-clipboard-manager = "2"
 
 [features]
 default = ["custom-protocol"]
