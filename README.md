@@ -35,6 +35,8 @@ jot something down in a tree of notes, and hide it again.
 | `Alt+N` | Create a new note |
 | `Alt+L` | Lock / unlock the current note |
 | `Alt+D` | Delete the current note (and its subnotes) |
+| `Alt+M` | Toggle Markdown view |
+| `Alt+B` | Switch to the next database |
 | `Alt+1` | Insert a divider line |
 | `Alt+2` | Insert a timestamp |
 | `Alt+3` | Insert a dateline |

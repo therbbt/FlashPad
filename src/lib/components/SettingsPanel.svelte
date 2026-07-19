@@ -38,6 +38,7 @@
   // reactivation fails), so App.svelte needs the AppState itself to decide
   // whether to show the notes view or the startup-error view.
   export let onReloaded: (state: AppState) => Promise<void>;
+  export let initialTab: 'general' | 'database' = 'general';
 
   const autostartService = new AutostartService();
   const hotkeyService = new HotkeyService();
@@ -45,7 +46,7 @@
   const backupService = new BackupService();
 
   let panelEl: HTMLDivElement;
-  let tab: 'general' | 'database' = 'general';
+  let tab: 'general' | 'database' = initialTab;
   let autostart = false;
   let loading = true;
   let error = '';
