@@ -5,7 +5,7 @@
   import { SettingsService, type FlashPadSettings } from './lib/services/settingsService';
   import { DEFAULT_DARK_PALETTE_ID, DEFAULT_LIGHT_PALETTE_ID, applyPalette, getPalette } from './lib/theme/palettes';
   import { HotkeyService } from './lib/services/hotkeyService';
-  import { DatabaseService, type AppState } from './lib/services/databaseService';
+  import { DatabaseService, type AppState, type DatabaseProfile } from './lib/services/databaseService';
   import TreeNode, { type TreeItem } from './lib/components/TreeNode.svelte';
   import ContextMenu, { type ContextMenuItem } from './lib/components/ContextMenu.svelte';
   import ShortcutsPanel from './lib/components/ShortcutsPanel.svelte';
@@ -43,6 +43,7 @@
   let clipboard: { id: number; mode: 'copy' | 'cut' } | null = null;
   let shortcutsOpen = false;
   let settingsOpen = false;
+  let settingsInitialTab: 'general' | 'database' = 'general';
   let markdownHelpOpen = false;
   // Populated once, from the single startup check in onMount (never
   // polled/re-checked while running) - null means either no update was
@@ -56,6 +57,10 @@
   // instead of silently falling through to an empty note list.
   let startupError: string | null = null;
   let hotkeySetting = 'Alt+S';
+  // Tracked here (not just inside DatabaseManagerSection) so Alt+B can cycle
+  // to the next database without opening Settings first.
+  let databases: DatabaseProfile[] = [];
+  let activeDatabaseId: number | null = null;
   let sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
   let isResizingSidebar = false;
 
@@ -212,6 +217,7 @@
   $: searchMatchIndex = isSearching ? searchResults.findIndex((n) => n.id === selectedId) : -1;
   $: selectedNoteCreatedAt = notes.find((n) => n.id === selectedId)?.createdAt ?? null;
   $: selectedNoteUpdatedAt = notes.find((n) => n.id === selectedId)?.updatedAt ?? null;
+  $: activeDatabaseName = databases.find((db) => db.id === activeDatabaseId)?.name ?? null;
 
   // ---------- data loading ----------
 
@@ -256,6 +262,10 @@
   // so `ready` must be checked explicitly rather than assumed from the
   // absence of a thrown error.
   const applyAppState = async (state: AppState | null, unavailableMessage: string) => {
+    if (state) {
+      databases = state.databases;
+      activeDatabaseId = state.activeDatabaseId;
+    }
     if (!state || !state.ready) {
       startupError = state?.error ?? unavailableMessage;
       return;
@@ -263,6 +273,16 @@
     startupError = null;
     resetNoteScopedState();
     await initializeNotes();
+  };
+
+  // Cycles to the next database in the list (wrapping around) - lets Alt+B
+  // switch databases without opening Settings first. A no-op with 0 or 1
+  // databases.
+  const cycleDatabase = () => {
+    if (databases.length < 2) return;
+    const currentIndex = databases.findIndex((db) => db.id === activeDatabaseId);
+    const next = databases[(currentIndex + 1) % databases.length];
+    void switchToDatabase(next.id);
   };
 
   const switchToDatabase = async (id: number) => {
@@ -471,6 +491,8 @@
       '- **Alt+N** - Create a new note',
       '- **Alt+L** - Lock / unlock the current note',
       '- **Alt+D** - Delete the current note (and its subnotes)',
+      '- **Alt+M** - Toggle Markdown view',
+      '- **Alt+B** - Switch to the next database',
       '- **Alt+1** - Insert a divider',
       '- **Alt+2** - Insert a timestamp',
       '- **Alt+3** - Insert a dateline',
@@ -933,6 +955,16 @@
       if (selectedId != null) void deleteNoteById(selectedId);
     }
 
+    if (event.altKey && event.key.toLowerCase() === 'm') {
+      event.preventDefault();
+      toggleMarkdown();
+    }
+
+    if (event.altKey && event.key.toLowerCase() === 'b') {
+      event.preventDefault();
+      cycleDatabase();
+    }
+
     if (event.key === 'Escape') {
       if (contextMenu || shortcutsOpen || settingsOpen || markdownHelpOpen || confirmState || updateDetailsOpen) return;
       event.preventDefault();
@@ -965,6 +997,10 @@
       hotkeySetting = await hotkeyService.get();
 
       const appState = await databaseService.getAppState();
+      if (appState) {
+        databases = appState.databases;
+        activeDatabaseId = appState.activeDatabaseId;
+      }
       if (appState && !appState.ready) {
         startupError = appState.error ?? 'The configured database is unavailable.';
       } else {
@@ -1096,6 +1132,25 @@
     </div>
 
     <div class="sidebar-bottom">
+      {#if activeDatabaseName}
+        <button
+          class="db-indicator"
+          type="button"
+          on:click={() => {
+            settingsInitialTab = 'database';
+            settingsOpen = true;
+          }}
+          aria-label="Current database - open database settings"
+          title="Switch databases with Alt+B"
+        >
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <ellipse cx="8" cy="3.5" rx="5.5" ry="2" />
+            <path d="M2.5 3.5V8c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2V3.5" />
+            <path d="M2.5 8v4.5c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2V8" />
+          </svg>
+          <span>{activeDatabaseName}</span>
+        </button>
+      {/if}
       <button class="theme-toggle" on:click={toggleTheme} aria-label="Toggle theme">
         {#if theme === 'dark'}
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
@@ -1296,7 +1351,19 @@
     onDarkPaletteChange={setDarkPalette}
     onCheckForUpdate={checkForUpdateManually}
     onImportFromFolder={importFromFolder}
-    onClose={() => (settingsOpen = false)}
+    onClose={() => {
+      settingsOpen = false;
+      settingsInitialTab = 'general';
+      // Settings can add/rename/remove databases without going through
+      // switchToDatabase - refresh so Alt+B cycling stays in sync.
+      void databaseService.getAppState().then((state) => {
+        if (state) {
+          databases = state.databases;
+          activeDatabaseId = state.activeDatabaseId;
+        }
+      });
+    }}
+    initialTab={settingsInitialTab}
     onSwitchDatabase={switchToDatabase}
     onRequestConfirm={confirmDialog}
     onImported={async () => {
@@ -1476,9 +1543,39 @@
 
   .sidebar-bottom {
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.4rem;
     padding-top: 0.4rem;
     border-top: 1px solid var(--border);
+  }
+
+  .db-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    min-width: 0;
+    border: 0;
+    border-radius: 0.3rem;
+    padding: 0.15rem 0.3rem;
+    background: transparent;
+    color: var(--muted);
+    font-size: 0.72rem;
+  }
+
+  .db-indicator:hover {
+    background: var(--panel-2);
+    color: var(--text);
+  }
+
+  .db-indicator svg {
+    flex-shrink: 0;
+  }
+
+  .db-indicator span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .theme-toggle {
