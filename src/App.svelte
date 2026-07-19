@@ -471,6 +471,7 @@
       '- **Alt+N** - Create a new note',
       '- **Alt+L** - Lock / unlock the current note',
       '- **Alt+D** - Delete the current note (and its subnotes)',
+      '- **Alt+M** - Toggle Markdown view',
       '- **Alt+1** - Insert a divider',
       '- **Alt+2** - Insert a timestamp',
       '- **Alt+3** - Insert a dateline',
@@ -931,6 +932,11 @@
     if (event.altKey && event.key.toLowerCase() === 'd') {
       event.preventDefault();
       if (selectedId != null) void deleteNoteById(selectedId);
+    }
+
+    if (event.altKey && event.key.toLowerCase() === 'm') {
+      event.preventDefault();
+      toggleMarkdown();
     }
 
     if (event.key === 'Escape') {
