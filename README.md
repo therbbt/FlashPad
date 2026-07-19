@@ -40,6 +40,7 @@ jot something down in a tree of notes, and hide it again.
 | `Alt+1` | Insert a divider line |
 | `Alt+2` | Insert a timestamp |
 | `Alt+3` | Insert a dateline |
+| `Alt+T` | Toggle focus between the editor and the notes menu |
 | `Enter` | Open the focused note, toggling its subnotes if it has any |
 | `↑` / `↓` | Move through the tree or search results |
 | `←` / `→` | Collapse / expand the focused note's subnotes |

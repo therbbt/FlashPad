@@ -328,6 +328,28 @@
     if (note) selectNote(note, focusEditor);
   };
 
+  // Alt+T - toggles keyboard focus between the notes menu and the open
+  // note's editor. Direction is derived from where focus actually is
+  // (rather than tracked separately) so it stays correct no matter how
+  // focus got there (mouse click, Tab, etc).
+  const toggleMenuFocus = () => {
+    const active = document.activeElement;
+    if (treeEl && active && treeEl.contains(active)) {
+      if (selectedId == null) return;
+      if (isMarkdownActive) {
+        markdownEditorRef?.focus();
+      } else {
+        textarea?.focus();
+      }
+      return;
+    }
+    // Focus the row for whichever note is currently open (falls back to
+    // the first visible row automatically - see the visibleFlat/focusedKey
+    // sync above).
+    if (selectedId != null) focusedKey = `note:${selectedId}`;
+    treeEl?.focus();
+  };
+
   const goToSearchMatch = (direction: 1 | -1) => {
     if (!searchResults.length) return;
     const nextIndex = searchMatchIndex === -1
@@ -493,6 +515,7 @@
       '- **Alt+D** - Delete the current note (and its subnotes)',
       '- **Alt+M** - Toggle Markdown view',
       '- **Alt+B** - Switch to the next database',
+      '- **Alt+T** - Toggle focus between the editor and the notes menu',
       '- **Alt+1** - Insert a divider',
       '- **Alt+2** - Insert a timestamp',
       '- **Alt+3** - Insert a dateline',
@@ -963,6 +986,11 @@
     if (event.altKey && event.key.toLowerCase() === 'b') {
       event.preventDefault();
       cycleDatabase();
+    }
+
+    if (event.altKey && event.key.toLowerCase() === 't') {
+      event.preventDefault();
+      toggleMenuFocus();
     }
 
     if (event.key === 'Escape') {
