@@ -65,6 +65,16 @@
   let isResizingSidebar = false;
 
   let noteText = '';
+  // Plain notes get their own undo/redo stack, independent of the browser's
+  // native textarea undo - Markdown notes already have reliable undo via
+  // Tiptap/ProseMirror's history extension, but the native undo manager for
+  // a bound <textarea> isn't dependable across platforms (WebKitGTK on
+  // Linux in particular - see the various other native-control quirks
+  // already worked around elsewhere in this file).
+  let plainUndoStack: { value: string; start: number; end: number }[] = [];
+  let plainRedoStack: { value: string; start: number; end: number }[] = [];
+  let lastPlainUndoSnapshotAt = 0;
+  const PLAIN_UNDO_COALESCE_MS = 500;
   let title = 'Untitled';
   let titleAutoDerive = true;
   let query = '';
@@ -316,6 +326,10 @@
     isMarkdownActive = note.isMarkdown;
     isLockedActive = note.isLocked;
     titleAutoDerive = note.title === 'Untitled' || note.title.trim() === '';
+    // Undo history is per-note - don't let it carry over to whatever note
+    // is opened next.
+    plainUndoStack = [];
+    plainRedoStack = [];
     if (focusEditor) requestAnimationFrame(() => textarea?.focus());
   };
 
@@ -412,6 +426,7 @@
     }
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
+    pushPlainUndoSnapshot(true);
     noteText = `${noteText.slice(0, start)}${text}${noteText.slice(end)}`;
     requestAnimationFrame(() => {
       const cursor = start + text.length;
@@ -422,6 +437,84 @@
   };
 
   const insertNewline = () => insertAtCursor('-=-=-=-=-=-=-=-=-= =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-\n');
+
+  // Records a checkpoint to undo back to. `force` is for discrete
+  // programmatic edits (paste, insert-timestamp/-divider/-dateline) that
+  // should always be their own undo step; native typing goes through the
+  // keydown handler below without force, so a burst of consecutive
+  // keystrokes within PLAIN_UNDO_COALESCE_MS collapses into a single step
+  // (matching how native undo normally groups continuous typing) instead of
+  // undoing one character at a time. Snapshotting is driven by keydown
+  // (fires before the keystroke's edit is applied) rather than the newer
+  // beforeinput event, since beforeinput support on plain <textarea>
+  // elements (as opposed to contenteditable) has historically been
+  // inconsistent on WebKitGTK.
+  const pushPlainUndoSnapshot = (force = false) => {
+    const now = Date.now();
+    if (!force && plainUndoStack.length && now - lastPlainUndoSnapshotAt < PLAIN_UNDO_COALESCE_MS) {
+      lastPlainUndoSnapshotAt = now;
+      return;
+    }
+    plainUndoStack = [
+      ...plainUndoStack.slice(-199),
+      { value: noteText, start: textarea?.selectionStart ?? noteText.length, end: textarea?.selectionEnd ?? noteText.length },
+    ];
+    plainRedoStack = [];
+    lastPlainUndoSnapshotAt = now;
+  };
+
+  const undoPlainText = () => {
+    if (!plainUndoStack.length) return;
+    const current = { value: noteText, start: textarea.selectionStart, end: textarea.selectionEnd };
+    const prev = plainUndoStack[plainUndoStack.length - 1];
+    plainUndoStack = plainUndoStack.slice(0, -1);
+    plainRedoStack = [...plainRedoStack, current];
+    noteText = prev.value;
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(prev.start, prev.end);
+    });
+    handleEditorInput();
+  };
+
+  const redoPlainText = () => {
+    if (!plainRedoStack.length) return;
+    const current = { value: noteText, start: textarea.selectionStart, end: textarea.selectionEnd };
+    const next = plainRedoStack[plainRedoStack.length - 1];
+    plainRedoStack = plainRedoStack.slice(0, -1);
+    plainUndoStack = [...plainUndoStack, current];
+    noteText = next.value;
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(next.start, next.end);
+    });
+    handleEditorInput();
+  };
+
+  // Keys that don't modify the field's content - no undo checkpoint needed
+  // for these (also avoids fighting the tree/search's own arrow-key
+  // navigation shortcuts).
+  const NON_EDITING_KEYS = new Set([
+    'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown',
+    'Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Escape',
+    'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
+  ]);
+
+  const handlePlainTextKeydown = (event: KeyboardEvent) => {
+    if (isLockedActive) return;
+    if (event.ctrlKey || event.metaKey) {
+      const key = event.key.toLowerCase();
+      if (key === 'z' && !event.shiftKey) {
+        event.preventDefault();
+        undoPlainText();
+      } else if ((key === 'z' && event.shiftKey) || key === 'y') {
+        event.preventDefault();
+        redoPlainText();
+      }
+      return;
+    }
+    if (!NON_EDITING_KEYS.has(event.key)) pushPlainUndoSnapshot(false);
+  };
 
   // Plain-text notes should never pick up rich formatting from the
   // clipboard (bold/colors/fonts from a pasted webpage, Word doc, etc.) -
@@ -1335,6 +1428,7 @@
           readonly={isLockedActive}
           on:input={handleEditorInput}
           on:paste={handlePlainTextPaste}
+          on:keydown={handlePlainTextKeydown}
         ></textarea>
       {/if}
     </div>
