@@ -423,6 +423,28 @@
 
   const insertNewline = () => insertAtCursor('-=-=-=-=-=-=-=-=-= =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-\n');
 
+  // Plain-text notes should never pick up rich formatting from the
+  // clipboard (bold/colors/fonts from a pasted webpage, Word doc, etc.) -
+  // force the text/plain flavor regardless of how Ctrl+V or the OS's own
+  // "Paste" action populated the clipboard. Only wired up on the plain
+  // <textarea> - Markdown notes keep the editor's normal paste handling,
+  // which is expected to preserve formatting.
+  //
+  // Even the text/plain flavor isn't clean, though: when copying from a
+  // rendered webpage, browsers generate that plain-text fallback from the
+  // page's DOM structure, which bakes in each source element's indentation
+  // as literal leading spaces/tabs on every line - strip those per line so
+  // pasted lines start flush left, matching what plain notes expect.
+  const handlePlainTextPaste = (event: ClipboardEvent) => {
+    event.preventDefault();
+    const raw = event.clipboardData?.getData('text/plain') ?? '';
+    const text = raw
+      .split('\n')
+      .map((line) => line.replace(/^[ \t]+/, ''))
+      .join('\n');
+    insertAtCursor(text);
+  };
+
   const formatLocalTimestamp = (date: Date): string => {
     const pad = (n: number) => String(n).padStart(2, '0');
     const y = date.getFullYear();
@@ -1312,6 +1334,7 @@
           placeholder="Start typing instantly..."
           readonly={isLockedActive}
           on:input={handleEditorInput}
+          on:paste={handlePlainTextPaste}
         ></textarea>
       {/if}
     </div>

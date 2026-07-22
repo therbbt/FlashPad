@@ -17,6 +17,5 @@
     "types": ["vite/client"]
   },
   "include": ["src", "main.ts"],
-  "references": []
-  
+  "references": [] 
 }
