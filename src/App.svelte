@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { NotesService, type NoteRecord } from './lib/services/notesService';
   import { SettingsService, type FlashPadSettings } from './lib/services/settingsService';
@@ -413,6 +413,16 @@
     if (selectedId == null || isLockedActive) return;
     const next = !isMarkdownActive;
     isMarkdownActive = next;
+    // Switching modes swaps the textarea/MarkdownEditor DOM out from under
+    // whichever one was focused - wait for that swap to render, then focus
+    // whichever editor is now showing so typing can continue immediately.
+    void tick().then(() => {
+      if (next) {
+        markdownEditorRef?.focus();
+      } else {
+        textarea?.focus();
+      }
+    });
     void notesService.save({ id: selectedId, isMarkdown: next }).then((saved) => {
       notes = notes.map((note) => (note.id === saved.id ? saved : note));
     });
