@@ -1,0 +1,39 @@
+name: Sync release notes to updater manifest
+
+# tauri-action bakes latest.json's "notes" field from the `releaseBody`
+# action input at BUILD time (see release.yml), which we never set - and
+# generateReleaseNotes only affects the release's body on GitHub's own
+# website, a completely separate value tauri-action never reads back. So
+# latest.json's notes field is always empty, no matter what you type into
+# the release description before hitting "Publish" on the draft.
+#
+# This runs once you actually publish the release and patches the
+# already-uploaded latest.json's "notes" field with the release's real
+# body, so the in-app updater's changelog dialog matches what's on GitHub.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  sync-notes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Patch latest.json's notes with the release body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx latest.json; then
+            echo "No latest.json asset on this release, nothing to do"
+            exit 0
+          fi
+
+          gh release download "$TAG" --pattern latest.json --output latest.json --clobber
+          gh release view "$TAG" --json body --jq '.body // ""' > release-body.md
+          jq --rawfile notes release-body.md '.notes = $notes' latest.json > latest.patched.json
+          mv latest.patched.json latest.json
+          gh release upload "$TAG" latest.json --clobber
