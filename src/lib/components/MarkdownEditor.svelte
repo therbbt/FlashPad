@@ -54,7 +54,40 @@
     return (editor.getAttributes('link').href as string | undefined) ?? null;
   }
 
+  // Handles link clicks via a real native "click" listener in the capture
+  // phase, rather than Tiptap/ProseMirror's editorProps.handleClick.
+  // ProseMirror reconstructs click semantics from its own mousedown/mouseup
+  // tracking rather than listening for the browser's actual "click" event,
+  // and the base Link extension's own bundled click plugin (still present -
+  // we only override renderHTML above) explicitly defers to the native
+  // anchor click whenever the view isn't editable. Between those two
+  // things, preventDefault() called from inside editorProps.handleClick did
+  // not reliably suppress the native anchor navigation in testing - a
+  // direct, real "click" listener in the capture phase is the same
+  // technique client-side routers use to intercept link clicks, and is
+  // guaranteed to run against the actual event the browser's default
+  // navigation is tied to.
+  const handleLinkClick = (event: MouseEvent) => {
+    const anchor = (event.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+    const href = anchor?.getAttribute('href');
+    if (!href) return;
+    // Always prevent the native anchor click-through first - without this,
+    // a plain click on a link that we decide NOT to open (the "just place
+    // the caret" case below) would still navigate, since the rendered
+    // element is a real <a href>.
+    event.preventDefault();
+    event.stopPropagation();
+    // Locked (non-editable) notes: any click opens the link, since there's
+    // no caret to place and no text to edit. Unlocked notes: require
+    // Ctrl/Cmd+click so a plain click on a link mid-sentence still just
+    // moves the caret, keeping the link's text editable.
+    if (editable && !(event.ctrlKey || event.metaKey)) return;
+    onOpenLink(href);
+  };
+
   onMount(() => {
+    element.addEventListener('click', handleLinkClick, true);
+
     editor = new Editor({
       element,
       editable,
@@ -64,10 +97,10 @@
         // configured one below.
         StarterKit.configure({ link: false }),
         Link.configure({
-          // We own opening links ourselves (see editorProps.handleClick
-          // below) so plain clicks in an editable note still just place the
-          // caret - Tiptap's built-in openOnClick can't distinguish that
-          // from a deliberate Ctrl/Cmd+click.
+          // We own opening links ourselves (see handleLinkClick above) so
+          // plain clicks in an editable note still just place the caret -
+          // Tiptap's built-in openOnClick can't distinguish that from a
+          // deliberate Ctrl/Cmd+click.
           openOnClick: false,
           autolink: true,
           protocols: ['http', 'https', 'mailto'],
@@ -92,28 +125,6 @@
         // links (GFM autolink), matching GitHub's rendering.
         Markdown.configure({ breaks: true, linkify: true }),
       ],
-      editorProps: {
-        handleClick(_view, _pos, event) {
-          const anchor = (event.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
-          const href = anchor?.getAttribute('href');
-          if (!href) return false;
-          // Always prevent the native anchor click-through first - without
-          // this, a plain click on a link that we decide NOT to open (the
-          // "just place the caret" case below) would still fall through to
-          // the browser's own default action and actually navigate/open a
-          // new window, since the rendered element is a real <a href>.
-          // Returning false (not true) afterwards still lets ProseMirror
-          // handle normal caret placement for that case.
-          event.preventDefault();
-          // Locked (non-editable) notes: any click opens the link, since
-          // there's no caret to place and no text to edit. Unlocked notes:
-          // require Ctrl/Cmd+click so a plain click on a link mid-sentence
-          // still just moves the caret, keeping the link's text editable.
-          if (editable && !(event.ctrlKey || event.metaKey)) return false;
-          onOpenLink(href);
-          return true;
-        },
-      },
       content,
       onUpdate: ({ editor: instance }) => {
         onUpdate(instance.storage.markdown.getMarkdown());
@@ -133,6 +144,7 @@
   $: editor?.setEditable(editable);
 
   onDestroy(() => {
+    element.removeEventListener('click', handleLinkClick, true);
     editor?.destroy();
   });
 </script>
