@@ -175,6 +175,29 @@ pub fn update_note(db: State<DbState>, note: NoteUpdate) -> Result<Note, String>
     find_note(&conn, note.id)
 }
 
+// Locking a note protects its TEXT, not a checklist's state - someone who
+// locks a finished checklist still expects to tick items off it. This is a
+// deliberate, narrow exception to the lock, separate from update_note's
+// general "reject content changes while locked" guard (which exists to
+// catch a stray autosave racing the lock, not to allow arbitrary writes).
+// Only call this from the checkbox-toggle path in the frontend - it does
+// not check `is_locked` at all, so it isn't a substitute for update_note's
+// own validation for any other kind of edit.
+#[tauri::command]
+pub fn save_checklist_toggle(db: State<DbState>, id: i64, content: String) -> Result<Note, String> {
+    let guard = db.0.lock().map_err(|e| e.to_string())?;
+    let conn = guard.as_ref().ok_or("No database is currently available")?;
+    let now = now_iso();
+
+    conn.execute(
+        "UPDATE notes SET content = ?1, updated_at = ?2 WHERE id = ?3",
+        params![content, now, id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    find_note(&conn, id)
+}
+
 #[tauri::command]
 pub fn delete_note(db: State<DbState>, id: i64) -> Result<(), String> {
     let guard = db.0.lock().map_err(|e| e.to_string())?;
