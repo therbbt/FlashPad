@@ -380,7 +380,13 @@
 
   const saveActiveNote = async () => {
     if (!selectedId) return;
-    const saved = await notesService.save({ id: selectedId, title, content: noteText });
+    // Locked notes only ever reach here via a checkbox toggle (see
+    // onReadOnlyChecked in MarkdownEditor.svelte) - route through the
+    // narrow exception that persists just the content, rather than the
+    // general save, which rejects content changes on a locked note.
+    const saved = isLockedActive
+      ? await notesService.saveChecklistToggle(selectedId, noteText)
+      : await notesService.save({ id: selectedId, title, content: noteText });
     notes = notes.map((note) => (note.id === saved.id ? saved : note));
     status = 'Saved';
   };
@@ -393,16 +399,25 @@
     }, 250);
   };
 
+  // Not guarded by isLockedActive: every OTHER path into this (typing in
+  // the plain textarea, insertAtCursor, plain-text undo/redo) is already
+  // blocked upstream while locked (native readonly / explicit checks), so
+  // in practice this only ever runs locked via the Markdown editor's
+  // checkbox-toggle exception below - which is exactly the one edit a
+  // locked note should still save.
   const handleEditorInput = () => {
-    if (isLockedActive) return;
     if (titleAutoDerive) {
       title = deriveTitleFromContent(noteText, isMarkdownActive);
     }
     scheduleSave();
   };
 
+  // Also fires for a checkbox toggle in a locked note (see
+  // onReadOnlyChecked in MarkdownEditor.svelte) - a locked note's text is
+  // read-only, but ticking a finished checklist's items is exactly the
+  // kind of edit locking is meant to still allow, and it should save and
+  // bump updated_at the same as any other edit.
   const handleMarkdownEditorUpdate = (markdown: string) => {
-    if (isLockedActive) return;
     noteText = markdown;
     handleEditorInput();
   };

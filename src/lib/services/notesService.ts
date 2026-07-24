@@ -75,6 +75,21 @@ export class NotesService {
     return await invoke<NoteRecord>('update_note', { note });
   }
 
+  // Separate from save() - locking a note protects its text, not a
+  // checklist's state, so a checkbox toggle needs to persist even while a
+  // note is locked. save()/update_note rejects content changes on a locked
+  // note as a safety net against a stray autosave racing the lock; this is
+  // the deliberate, narrow exception to that, and should only be called
+  // from the checkbox-toggle path.
+  async saveChecklistToggle(id: number, content: string): Promise<NoteRecord> {
+    if (!isTauriRuntime()) {
+      const notes = readFallback().map((item) => (item.id === id ? { ...item, content, updatedAt: new Date().toISOString() } : item));
+      writeFallback(notes);
+      return notes.find((item) => item.id === id) as NoteRecord;
+    }
+    return await invoke<NoteRecord>('save_checklist_toggle', { id, content });
+  }
+
   async delete(id: number): Promise<void> {
     if (!isTauriRuntime()) {
       writeFallback(readFallback().filter((note) => note.id !== id));

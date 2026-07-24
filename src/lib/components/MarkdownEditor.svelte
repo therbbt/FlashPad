@@ -85,8 +85,49 @@
     onOpenLink(href);
   };
 
+  // Applies a task item checkbox's new checked state to the document when
+  // the note is locked (read-only). Unlocked notes don't need this - Tiptap
+  // already updates the document correctly there via its own getPos()-based
+  // command in the TaskItem node view.
+  //
+  // Locked notes are why this exists: Tiptap's onReadOnlyChecked hook only
+  // receives the node, not its position, and the "obvious" fix - searching
+  // the document for a node === match - turned out to be unreliable. The
+  // TaskItem node view's change-listener closure captures `node` once at
+  // node-view-creation time and never refreshes it on later edits, so for
+  // any item whose text was typed after it was created (i.e. essentially
+  // all of them), the node it hands back is a stale, content-less copy that
+  // can never match the live document. Locating the position from the
+  // actual clicked DOM element via view.posAtDOM sidesteps that entirely.
+  const handleTaskCheckboxChange = (event: Event) => {
+    if (editable) return;
+    const checkbox = event.target as HTMLInputElement;
+    if (checkbox.type !== 'checkbox') return;
+    const listItem = checkbox.closest('li');
+    if (!editor || !listItem) return;
+    const domPos = editor.view.posAtDOM(listItem, 0);
+    const $pos = editor.state.doc.resolve(domPos);
+    for (let depth = $pos.depth; depth > 0; depth--) {
+      const candidate = $pos.node(depth);
+      if (candidate.type.name === 'taskItem') {
+        const tr = editor.state.tr.setNodeMarkup($pos.before(depth), undefined, { ...candidate.attrs, checked: checkbox.checked });
+        // Deliberately left out of undo history: Ctrl+Z can't reach this
+        // note while it's locked anyway (ProseMirror skips keydown
+        // handling entirely for non-editable views), and letting a toggle
+        // made while locked sit in the stack to surface later - after
+        // unlocking and editing normally - would be a confusing
+        // action-at-a-distance. Ticking the box again is the toggle's own
+        // undo.
+        tr.setMeta('addToHistory', false);
+        editor.view.dispatch(tr);
+        return;
+      }
+    }
+  };
+
   onMount(() => {
     element.addEventListener('click', handleLinkClick, true);
+    element.addEventListener('change', handleTaskCheckboxChange);
 
     editor = new Editor({
       element,
@@ -116,7 +157,21 @@
         }),
         Placeholder.configure({ placeholder }),
         TaskList,
-        TaskItem.configure({ nested: true }),
+        TaskItem.configure({
+          nested: true,
+          // Locking a note protects its TEXT, not a checklist's state - the
+          // notes people actually lock are often finished checklists they
+          // still want to tick items off of. Tiptap already renders the
+          // checkbox as a real, non-disabled <input> even when read-only
+          // (only the surrounding text becomes non-editable, since it's a
+          // separate DOM subtree the checkbox's own click can't reach) - by
+          // default it just reverts the DOM checkbox back on every click
+          // unless this option is set. The actual document update happens
+          // in handleTaskCheckboxChange above (see its comment for why);
+          // this just needs to return true so Tiptap doesn't revert the DOM
+          // checkbox out from under that.
+          onReadOnlyChecked: () => true,
+        }),
         // breaks: true keeps a single newline as a hard line break (matching
         // the plain textarea) instead of CommonMark's default of collapsing
         // it into a soft space, so existing plain content doesn't visually
@@ -145,6 +200,7 @@
 
   onDestroy(() => {
     element.removeEventListener('click', handleLinkClick, true);
+    element.removeEventListener('change', handleTaskCheckboxChange);
     editor?.destroy();
   });
 </script>

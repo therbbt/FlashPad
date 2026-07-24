@@ -225,6 +225,7 @@ fn main() {
             notes::list_notes,
             notes::create_note,
             notes::update_note,
+            notes::save_checklist_toggle,
             notes::delete_note,
             notes::move_note,
             notes::duplicate_note,
