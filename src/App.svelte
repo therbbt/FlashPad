@@ -17,11 +17,14 @@
   import ResizeHandles from './lib/components/ResizeHandles.svelte';
   import UpdateToast from './lib/components/UpdateToast.svelte';
   import UpdateDialog from './lib/components/UpdateDialog.svelte';
+  import WhatsNewDialog from './lib/components/WhatsNewDialog.svelte';
   import { check as checkForUpdate, type Update } from '@tauri-apps/plugin-updater';
+  import { getVersion } from '@tauri-apps/api/app';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { isAllowedLinkUrl } from './lib/utils/links';
+  import { fetchReleaseNotes, type ReleaseNotes } from './lib/services/releaseNotesService';
 
   const notesService = new NotesService();
   const settingsService = new SettingsService();
@@ -54,6 +57,12 @@
   let updateDetailsOpen = false;
   let dismissedUpdateVersion: string | null = null;
   $: showUpdateToast = availableUpdate !== null && availableUpdate.version !== dismissedUpdateVersion;
+  // Set once, from checkForWhatsNew in onMount, when the app detects it's
+  // running a different version than it was as of the last startup - i.e.
+  // it was just updated. Unrelated to availableUpdate/showUpdateToast above,
+  // which is about a NEWER version available to install; this is about
+  // notes for the version already running.
+  let whatsNewNotes: ReleaseNotes | null = null;
   // Set when the configured active database is unreachable at startup (e.g.
   // an unmounted sync folder) - replaces the notes UI with an error view
   // instead of silently falling through to an empty note list.
@@ -1071,6 +1080,39 @@
     }
   };
 
+  // Checked once on startup (called from onMount with the lastSeenVersion
+  // loaded there) - detects that the app itself was updated since the last
+  // launch, as opposed to availableUpdate/checkForAppUpdate above, which is
+  // about a newer version available to install. Silent on failure, same
+  // reasoning as checkForAppUpdate: a missed "what's new" is never worth
+  // blocking startup over.
+  const checkForWhatsNew = async (lastSeenVersion: string | null) => {
+    try {
+      const currentVersion = await getVersion();
+      if (lastSeenVersion === null) {
+        // Fresh install (or first launch since this feature shipped) -
+        // nothing to compare against, so nothing to show. Record the
+        // baseline so a real version change is detected from here on.
+        await settingsService.saveLastSeenVersion(currentVersion);
+        return;
+      }
+      if (lastSeenVersion === currentVersion) return;
+      const notes = await fetchReleaseNotes(currentVersion);
+      // Deliberately left un-saved on a failed fetch - a transient network
+      // hiccup shouldn't permanently skip that version's notes; leaving
+      // lastSeenVersion behind means this retries on the next launch.
+      if (!notes) return;
+      whatsNewNotes = notes;
+      await settingsService.saveLastSeenVersion(currentVersion);
+    } catch (err) {
+      console.error("What's new check failed", err);
+    }
+  };
+
+  const closeWhatsNew = () => {
+    whatsNewNotes = null;
+  };
+
   const dismissUpdate = () => {
     if (!availableUpdate) return;
     dismissedUpdateVersion = availableUpdate.version;
@@ -1183,7 +1225,7 @@
     }
 
     if (event.key === 'Escape') {
-      if (contextMenu || shortcutsOpen || settingsOpen || markdownHelpOpen || confirmState || updateDetailsOpen) return;
+      if (contextMenu || shortcutsOpen || settingsOpen || markdownHelpOpen || confirmState || updateDetailsOpen || whatsNewNotes) return;
       event.preventDefault();
       void invoke('hide_window').catch(() => {
         status = 'Window hidden';
@@ -1206,6 +1248,7 @@
       dismissedUpdateVersion = settings.dismissedUpdateVersion;
       document.documentElement.dataset.theme = theme;
       applyActivePalette();
+      void checkForWhatsNew(settings.lastSeenVersion);
     } catch (err) {
       console.error('FlashPad failed to load settings', err);
     }
@@ -1623,6 +1666,10 @@
 
 {#if updateDetailsOpen && availableUpdate}
   <UpdateDialog update={availableUpdate} onDismiss={dismissUpdate} />
+{/if}
+
+{#if whatsNewNotes}
+  <WhatsNewDialog notes={whatsNewNotes} onClose={closeWhatsNew} />
 {/if}
 
 {#if toastMessage}
