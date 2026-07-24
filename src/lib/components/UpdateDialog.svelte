@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { Update } from '@tauri-apps/plugin-updater';
   import { relaunch } from '@tauri-apps/plugin-process';
+  import { openUrl } from '@tauri-apps/plugin-opener';
   import MarkdownEditor from './MarkdownEditor.svelte';
+  import { isAllowedLinkUrl } from '../utils/links';
 
   export let update: Update;
   // Covers both "Not now" and closing the dialog any other way (X, Escape,
@@ -13,6 +15,14 @@
   let installing = false;
   let progressLabel = '';
   let errorMessage = '';
+
+  // Release notes are read-only, but a link in them (e.g. to the full
+  // changelog) should still open - same protocol check as the notes
+  // editor's openLink, just without a toast for this lower-stakes surface.
+  const openNotesLink = (url: string) => {
+    if (!isAllowedLinkUrl(url)) return;
+    void openUrl(url).catch(() => {});
+  };
 
   const formattedDate = (() => {
     if (!update.date) return null;
@@ -87,7 +97,7 @@
 
     {#if update.body}
       <div class="notes">
-        <MarkdownEditor content={update.body} noteId={0} onUpdate={() => {}} editable={false} />
+        <MarkdownEditor content={update.body} noteId={0} onUpdate={() => {}} onOpenLink={openNotesLink} editable={false} />
       </div>
     {:else}
       <p class="notes empty">No release notes provided.</p>

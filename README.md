@@ -11,7 +11,8 @@ jot something down in a tree of notes, and hide it again.
 - **Tree-structured notes** — create, rename, delete, duplicate, and move
   notes and subnotes.
 - **Markdown editor** — rich text editing powered by Tiptap, with markdown
-  shortcuts for headings and formatting.
+  shortcuts for headings and formatting. Links open in your default browser
+  (Ctrl+Click, a plain click on a locked note, right-click, or Alt+O).
 - **Quick inserts** — dividers, timestamps, and datelines via keyboard
   shortcuts.
 - **Note locking** — protect a note from accidental edits.
@@ -36,6 +37,7 @@ jot something down in a tree of notes, and hide it again.
 | `Alt+L` | Lock / unlock the current note |
 | `Alt+D` | Delete the current note (and its subnotes) |
 | `Alt+M` | Toggle Markdown view |
+| `Alt+O` | Open the link under the caret (Markdown view) |
 | `Alt+B` | Switch to the next database |
 | `Alt+1` | Insert a divider line |
 | `Alt+2` | Insert a timestamp |
@@ -53,7 +55,7 @@ jot something down in a tree of notes, and hide it again.
 - [Tauri 2](https://tauri.app/) (Rust) for the desktop shell
 - [Svelte 5](https://svelte.dev/) + [Vite](https://vitejs.dev/) + TypeScript for the frontend
 - [Tiptap](https://tiptap.dev/) for markdown editing
-- Tauri plugins: `autostart`, `global-shortcut`, `window-state`, `dialog`, `updater`, `process`
+- Tauri plugins: `autostart`, `global-shortcut`, `window-state`, `dialog`, `updater`, `process`, `clipboard-manager`, `opener`
 
 ## Getting Started
 

@@ -196,6 +196,27 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_opener::init())
+        // Defense in depth: nothing currently constructs a link that would
+        // navigate the webview itself (note links open via the opener
+        // plugin's `open_url`, which launches the OS's default handler and
+        // never touches this window), but a plain `<a>` slipping through
+        // without our click-interception would otherwise be able to replace
+        // the whole FlashPad UI with whatever page it points to. Blocks any
+        // navigation outside the app's own origin.
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry, ()>::new("navigation-guard")
+                .on_navigation(|_webview, url| {
+                    let allowed = url.scheme() == "tauri"
+                        || (url.scheme() == "https" && url.host_str() == Some("tauri.localhost"))
+                        || (cfg!(debug_assertions) && url.host_str() == Some("127.0.0.1"));
+                    if !allowed {
+                        eprintln!("[flashpad] blocked navigation to: {url}");
+                    }
+                    allowed
+                })
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             hide_window,
             frontend_ready,

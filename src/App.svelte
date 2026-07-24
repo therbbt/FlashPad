@@ -20,6 +20,8 @@
   import { check as checkForUpdate, type Update } from '@tauri-apps/plugin-updater';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
+  import { openUrl } from '@tauri-apps/plugin-opener';
+  import { isAllowedLinkUrl } from './lib/utils/links';
 
   const notesService = new NotesService();
   const settingsService = new SettingsService();
@@ -93,6 +95,8 @@
   let noteInfoOpen = false;
   let copiedField: 'created' | 'updated' | null = null;
   let copiedFieldTimer: ReturnType<typeof setTimeout> | undefined;
+  let toastMessage: string | null = null;
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
   // ---------- persistence helpers ----------
 
@@ -623,7 +627,7 @@
       '',
       '## Markdown',
       '',
-      'Toggle **Markdown** at the bottom of a note to format as you type - headings, **bold**, lists, and more. Use the Markdown guide button (top right) for the full syntax.',
+      'Toggle **Markdown** at the bottom of a note to format as you type - headings, **bold**, lists, and more. Use the Markdown guide button (top right) for the full syntax. Links open in your default browser - Ctrl+Click (or a plain click on a locked note), right-click for more options, or Alt+O to open the link under the caret.',
       '',
       '## Locking notes',
       '',
@@ -639,6 +643,7 @@
       '- **Alt+L** - Lock / unlock the current note',
       '- **Alt+D** - Delete the current note (and its subnotes)',
       '- **Alt+M** - Toggle Markdown view',
+      '- **Alt+O** - Open the link under the caret (Markdown view)',
       '- **Alt+B** - Switch to the next database',
       '- **Alt+T** - Toggle focus between the editor and the notes menu',
       '- **Alt+1** - Insert a divider',
@@ -793,6 +798,29 @@
     }
   };
 
+  const showToast = (message: string) => {
+    toastMessage = message;
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toastMessage = null), 3500);
+  };
+
+  // Re-checked here even though the Link extension in MarkdownEditor.svelte
+  // already restricts which hrefs can become a link mark in the first
+  // place - note content can arrive from a paste (a crafted anchor from a
+  // webpage), so never trust the frontend DOM alone for something that
+  // reaches out to the OS.
+  const openLink = async (url: string) => {
+    if (!isAllowedLinkUrl(url)) {
+      showToast("Can't open this link");
+      return;
+    }
+    try {
+      await openUrl(url);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to open link');
+    }
+  };
+
   const pasteNote = async (targetParentId: number | null) => {
     if (!clipboard) return;
     const { id, mode } = clipboard;
@@ -898,10 +926,23 @@
   const openEditorMenu = (event: MouseEvent) => {
     if (selectedId == null) return;
     const id = selectedId;
+    // Links only exist in Markdown mode - closest('a[href]') naturally
+    // finds nothing in the plain textarea, but the isMarkdownActive check
+    // is kept as the source of truth rather than relying on that.
+    const linkHref = isMarkdownActive
+      ? ((event.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null)?.getAttribute('href') ?? null
+      : null;
     contextMenu = {
       x: event.clientX,
       y: event.clientY,
       items: [
+        ...(linkHref
+          ? [
+              { label: 'Open link', action: () => void openLink(linkHref) },
+              { label: 'Copy link address', action: () => void writeClipboardText(linkHref) },
+              { label: '', separator: true },
+            ]
+          : []),
         { label: 'Copy', action: () => copyNote(id) },
         { label: 'Cut', action: () => cutNote(id) },
         { label: 'Paste', disabled: clipboard == null, action: () => void pasteNote(id) },
@@ -1116,6 +1157,14 @@
     if (event.altKey && event.key.toLowerCase() === 't') {
       event.preventDefault();
       toggleMenuFocus();
+    }
+
+    if (event.altKey && event.key.toLowerCase() === 'o') {
+      event.preventDefault();
+      if (isMarkdownActive) {
+        const href = markdownEditorRef?.getLinkHrefAtCursor();
+        if (href) void openLink(href);
+      }
     }
 
     if (event.key === 'Escape') {
@@ -1426,6 +1475,7 @@
           content={noteText}
           noteId={selectedId ?? -1}
           onUpdate={handleMarkdownEditorUpdate}
+          onOpenLink={openLink}
           placeholder="Start typing instantly..."
           editable={!isLockedActive}
         />
@@ -1558,6 +1608,10 @@
 
 {#if updateDetailsOpen && availableUpdate}
   <UpdateDialog update={availableUpdate} onDismiss={dismissUpdate} />
+{/if}
+
+{#if toastMessage}
+  <div class="link-toast" role="status">{toastMessage}</div>
 {/if}
 
 <style>
@@ -2083,6 +2137,22 @@
   .search-nav-btn:disabled {
     opacity: 0.4;
     cursor: default;
+  }
+
+  .link-toast {
+    position: fixed;
+    left: 50%;
+    bottom: calc(var(--window-shadow-margin, 0px) + 0.75rem);
+    transform: translateX(-50%);
+    z-index: 1300;
+    max-width: min(320px, calc(100vw - 1.5rem));
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 0.6rem;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+    padding: 0.5rem 0.75rem;
+    font-size: 0.78rem;
+    color: var(--text);
   }
 
 </style>
