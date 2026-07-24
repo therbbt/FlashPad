@@ -30,6 +30,15 @@
       ] as [string, string][],
     },
     {
+      label: 'Links',
+      items: [
+        ['Alt+O', 'Open the link under the caret (Markdown view)'],
+        ['Click a link (locked note)', 'Open it'],
+        ['Ctrl+Click a link (unlocked note)', 'Open it - a plain click just places the caret'],
+        ['Right-click a link', 'Open link / Copy link address'],
+      ] as [string, string][],
+    },
+    {
       label: 'Database',
       items: [
         ['Alt+B', 'Switch to the next database'],
