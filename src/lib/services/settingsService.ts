@@ -8,6 +8,17 @@ export interface FlashPadSettings {
   // now"), so the check on the next startup doesn't nag about the same
   // release again - only a newer version reopens the toast.
   dismissedUpdateVersion: string | null;
+  // Version the app was running as of the last successful startup check -
+  // NOT the same thing as dismissedUpdateVersion (that's about an update
+  // offered but not yet installed; this is about a version already
+  // running). Comparing this against the current build's version on
+  // startup is how the "What's new" dialog knows the app was just updated,
+  // as opposed to a fresh install or an unchanged version. Only updated
+  // once the What's new dialog has actually been shown (or shown to be
+  // unnecessary) - see checkForWhatsNew in App.svelte - so a transient
+  // failure to fetch that version's notes retries on the next launch
+  // instead of silently skipping it forever.
+  lastSeenVersion: string | null;
 }
 
 const STORAGE_KEY = 'flashpad.settings';
@@ -17,6 +28,7 @@ const DEFAULTS: FlashPadSettings = {
   lightPaletteId: DEFAULT_LIGHT_PALETTE_ID,
   darkPaletteId: DEFAULT_DARK_PALETTE_ID,
   dismissedUpdateVersion: null,
+  lastSeenVersion: null,
 };
 
 export class SettingsService {
@@ -31,6 +43,7 @@ export class SettingsService {
       lightPaletteId: parsed.lightPaletteId ?? DEFAULTS.lightPaletteId,
       darkPaletteId: parsed.darkPaletteId ?? DEFAULTS.darkPaletteId,
       dismissedUpdateVersion: parsed.dismissedUpdateVersion ?? DEFAULTS.dismissedUpdateVersion,
+      lastSeenVersion: parsed.lastSeenVersion ?? DEFAULTS.lastSeenVersion,
     };
     return this.cached;
   }
@@ -61,5 +74,9 @@ export class SettingsService {
 
   async saveDismissedUpdateVersion(version: string): Promise<void> {
     await this.save({ dismissedUpdateVersion: version });
+  }
+
+  async saveLastSeenVersion(version: string): Promise<void> {
+    await this.save({ lastSeenVersion: version });
   }
 }
