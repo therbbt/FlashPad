@@ -10,6 +10,7 @@ export interface NoteRecord {
   isMarkdown: boolean;
   isLocked: boolean;
   sortOrder: number;
+  showLineNumbers: boolean;
 }
 
 export interface ImportSummary {
@@ -56,6 +57,7 @@ export class NotesService {
         isMarkdown: payload.isMarkdown ?? false,
         isLocked: false,
         sortOrder: siblingOrders.length ? Math.max(...siblingOrders) + 1 : 0,
+        showLineNumbers: false,
       };
       const notes = [...existing, note];
       writeFallback(notes);
@@ -66,7 +68,7 @@ export class NotesService {
     });
   }
 
-  async save(note: { id: number; title?: string; content?: string; isMarkdown?: boolean; isLocked?: boolean }): Promise<NoteRecord> {
+  async save(note: { id: number; title?: string; content?: string; isMarkdown?: boolean; isLocked?: boolean; showLineNumbers?: boolean }): Promise<NoteRecord> {
     if (!isTauriRuntime()) {
       const notes = readFallback().map((item) => (item.id === note.id ? { ...item, ...note, updatedAt: new Date().toISOString() } : item));
       writeFallback(notes);

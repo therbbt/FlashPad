@@ -19,6 +19,7 @@ pub struct Note {
     pub is_markdown: bool,
     pub is_locked: bool,
     pub sort_order: i64,
+    pub show_line_numbers: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +30,7 @@ pub struct NoteInput {
     pub parent_id: Option<i64>,
     pub is_markdown: Option<bool>,
     pub is_locked: Option<bool>,
+    pub show_line_numbers: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,9 +41,10 @@ pub struct NoteUpdate {
     pub content: Option<String>,
     pub is_markdown: Option<bool>,
     pub is_locked: Option<bool>,
+    pub show_line_numbers: Option<bool>,
 }
 
-const SELECT_COLUMNS: &str = "id, title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order";
+const SELECT_COLUMNS: &str = "id, title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order, show_line_numbers";
 
 fn row_to_note(row: &Row) -> rusqlite::Result<Note> {
     Ok(Note {
@@ -54,6 +57,7 @@ fn row_to_note(row: &Row) -> rusqlite::Result<Note> {
         is_markdown: row.get(6)?,
         is_locked: row.get(7)?,
         sort_order: row.get(8)?,
+        show_line_numbers: row.get(9)?,
     })
 }
 
@@ -130,11 +134,12 @@ pub fn create_note(db: State<DbState>, note: NoteInput) -> Result<Note, String> 
     let content = note.content.unwrap_or_default();
     let is_markdown = note.is_markdown.unwrap_or(false);
     let is_locked = note.is_locked.unwrap_or(false);
+    let show_line_numbers = note.show_line_numbers.unwrap_or(false);
     let sort_order = next_sort_order(&conn, note.parent_id)?;
 
     conn.execute(
-        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7)",
-        params![title, content, note.parent_id, now, is_markdown, is_locked, sort_order],
+        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order, show_line_numbers) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8)",
+        params![title, content, note.parent_id, now, is_markdown, is_locked, sort_order, show_line_numbers],
     )
     .map_err(|e| e.to_string())?;
 
@@ -164,11 +169,12 @@ pub fn update_note(db: State<DbState>, note: NoteUpdate) -> Result<Note, String>
     let title = note.title.unwrap_or(existing.title);
     let content = note.content.unwrap_or(existing.content);
     let is_markdown = note.is_markdown.unwrap_or(existing.is_markdown);
+    let show_line_numbers = note.show_line_numbers.unwrap_or(existing.show_line_numbers);
     let now = now_iso();
 
     conn.execute(
-        "UPDATE notes SET title = ?1, content = ?2, updated_at = ?3, is_markdown = ?4, is_locked = ?5 WHERE id = ?6",
-        params![title, content, now, is_markdown, is_locked, note.id],
+        "UPDATE notes SET title = ?1, content = ?2, updated_at = ?3, is_markdown = ?4, is_locked = ?5, show_line_numbers = ?6 WHERE id = ?7",
+        params![title, content, now, is_markdown, is_locked, show_line_numbers, note.id],
     )
     .map_err(|e| e.to_string())?;
 
@@ -283,8 +289,8 @@ pub fn duplicate_note(db: State<DbState>, id: i64) -> Result<Note, String> {
     // A duplicate is never locked, even if the source is - it's a fresh copy
     // the user will likely want to edit further.
     conn.execute(
-        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order) VALUES (?1, ?2, ?3, ?4, ?4, ?5, 0, ?6)",
-        params![title, source.content, source.parent_id, now, source.is_markdown, sort_order],
+        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order, show_line_numbers) VALUES (?1, ?2, ?3, ?4, ?4, ?5, 0, ?6, ?7)",
+        params![title, source.content, source.parent_id, now, source.is_markdown, sort_order, source.show_line_numbers],
     )
     .map_err(|e| e.to_string())?;
 
@@ -524,6 +530,18 @@ mod tests {
     fn note_update_deserializes_camel_case_is_locked() {
         let input: NoteUpdate = serde_json::from_str(r#"{"id":1,"isLocked":true}"#).unwrap();
         assert_eq!(input.is_locked, Some(true));
+    }
+
+    #[test]
+    fn note_input_deserializes_camel_case_show_line_numbers() {
+        let input: NoteInput = serde_json::from_str(r#"{"title":"Hi","content":"","showLineNumbers":true}"#).unwrap();
+        assert_eq!(input.show_line_numbers, Some(true));
+    }
+
+    #[test]
+    fn note_update_deserializes_camel_case_show_line_numbers() {
+        let input: NoteUpdate = serde_json::from_str(r#"{"id":1,"showLineNumbers":true}"#).unwrap();
+        assert_eq!(input.show_line_numbers, Some(true));
     }
 
     // extract_current_content - fixtures are byte-for-byte copies of a real

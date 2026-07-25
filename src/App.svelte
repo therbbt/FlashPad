@@ -95,7 +95,9 @@
   let darkPaletteId = DEFAULT_DARK_PALETTE_ID;
   let isMarkdownActive = false;
   let isLockedActive = false;
+  let showLineNumbersActive = false;
   let textarea: HTMLTextAreaElement;
+  let gutterEl: HTMLPreElement | undefined;
   let markdownEditorRef: MarkdownEditor | undefined;
   let treeEl: HTMLDivElement;
   let insertButton: HTMLButtonElement;
@@ -338,6 +340,7 @@
     noteText = note.content;
     isMarkdownActive = note.isMarkdown;
     isLockedActive = note.isLocked;
+    showLineNumbersActive = note.showLineNumbers;
     titleAutoDerive = note.title === 'Untitled' || note.title.trim() === '';
     // Undo history is per-note - don't let it carry over to whatever note
     // is opened next.
@@ -667,6 +670,7 @@
       '- **Alt+L** - Lock / unlock the current note',
       '- **Alt+D** - Delete the current note (and its subnotes)',
       '- **Alt+M** - Toggle Markdown view',
+      '- **Alt+R** - Toggle line numbers (plain text notes)',
       '- **Alt+O** - Open the link under the caret (Markdown view)',
       '- **Alt+B** - Switch to the next database',
       '- **Alt+T** - Toggle focus between the editor and the notes menu',
@@ -1067,6 +1071,44 @@
     if (theme === 'dark') applyActivePalette();
   };
 
+  // Per-note, toggled via Alt+R - not gated on isLockedActive, since this is
+  // a display preference rather than an edit to the note's protected text
+  // (and update_note's lock guard only rejects title/content changes
+  // anyway, so this always goes through even on a locked note).
+  const toggleLineNumbers = async (id: number) => {
+    const note = notes.find((n) => n.id === id);
+    if (!note) return;
+    const next = !note.showLineNumbers;
+    const saved = await notesService.save({ id, showLineNumbers: next });
+    notes = notes.map((n) => (n.id === saved.id ? saved : n));
+    if (selectedId === id) showLineNumbersActive = saved.showLineNumbers;
+    status = next ? 'Line numbers on' : 'Line numbers off';
+  };
+
+  // Line numbers are per logical line (split on \n), not per wrapped visual
+  // row - matching how editors typically define "line numbers" (e.g. the
+  // line a cursor position refers to), and avoiding the cost/fragility of
+  // measuring where a plain <textarea> actually wraps text, which would
+  // need to be recomputed on every resize as well as every edit. The plain
+  // editor switches to no-wrap/horizontal-scroll while this is on (see the
+  // .no-wrap class below) specifically so each logical line always renders
+  // as exactly one row, keeping numbers correctly aligned with their line -
+  // without that, a wrapped line would silently throw off every number
+  // beneath it.
+  $: plainLineNumberText = showLineNumbersActive ? Array.from({ length: noteText.split('\n').length }, (_, i) => i + 1).join('\n') : '';
+
+  // Keeps the gutter's vertical position matched to the textarea's own
+  // scroll - re-runs whenever the gutter is (re)mounted too, so toggling
+  // the setting on while already scrolled down doesn't leave the gutter
+  // stuck at the top until the next scroll event.
+  $: if (gutterEl && textarea) {
+    gutterEl.scrollTop = textarea.scrollTop;
+  }
+
+  const syncGutterScroll = () => {
+    if (gutterEl && textarea) gutterEl.scrollTop = textarea.scrollTop;
+  };
+
   // Checked once on startup only (called from onMount, never polled/re-run
   // while the app is open) - failures (no internet, GitHub unreachable,
   // etc.) are swallowed silently since a missed check just means no
@@ -1222,6 +1264,11 @@
         const href = markdownEditorRef?.getLinkHrefAtCursor();
         if (href) void openLink(href);
       }
+    }
+
+    if (event.altKey && event.key.toLowerCase() === 'r') {
+      event.preventDefault();
+      if (selectedId != null) void toggleLineNumbers(selectedId);
     }
 
     if (event.key === 'Escape') {
@@ -1538,16 +1585,23 @@
           editable={!isLockedActive}
         />
       {:else}
-        <textarea
-          bind:this={textarea}
-          bind:value={noteText}
-          class="editor"
-          placeholder="Start typing instantly..."
-          readonly={isLockedActive}
-          on:input={handleEditorInput}
-          on:paste={handlePlainTextPaste}
-          on:keydown={handlePlainTextKeydown}
-        ></textarea>
+        <div class="plain-editor-wrap">
+          {#if showLineNumbersActive}
+            <pre class="line-gutter" bind:this={gutterEl} aria-hidden="true">{plainLineNumberText}</pre>
+          {/if}
+          <textarea
+            bind:this={textarea}
+            bind:value={noteText}
+            class="editor"
+            class:no-wrap={showLineNumbersActive}
+            placeholder="Start typing instantly..."
+            readonly={isLockedActive}
+            on:input={handleEditorInput}
+            on:paste={handlePlainTextPaste}
+            on:keydown={handlePlainTextKeydown}
+            on:scroll={syncGutterScroll}
+          ></textarea>
+        </div>
       {/if}
     </div>
 
@@ -2117,6 +2171,7 @@
   .editor {
     flex: 1;
     width: 100%;
+    min-width: 0;
     border: 0;
     resize: none;
     outline: none;
@@ -2129,6 +2184,48 @@
   .editor::placeholder {
     color: var(--muted);
     opacity: 1;
+  }
+
+  .plain-editor-wrap {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+  }
+
+  /* Wrapping is disabled while the gutter is showing (see .no-wrap below) so
+     every logical line renders as exactly one row - required for the
+     line-number-per-logical-line approach above to actually line up with
+     its text; a wrapped line would otherwise push every number beneath it
+     out of alignment. */
+  .editor.no-wrap {
+    white-space: pre;
+    overflow-x: auto;
+  }
+
+  .line-gutter {
+    flex-shrink: 0;
+    margin: 0;
+    min-width: 2ch;
+    padding: 1rem 0.6rem 1rem 0.7rem;
+    font-family: inherit;
+    /* Smaller than the note text (a smaller, quieter rail reads better than
+       numbers competing at the same size), but line-height is set in rem
+       (absolute, independent of this element's own smaller font-size)
+       rather than as a unitless multiplier, so each row still lines up
+       exactly with .editor's own 1.55 line-height despite the smaller
+       font. No background tint anymore either - that plus the border was
+       what made the gutter read as a heavy, separate block instead of a
+       thin rail. */
+    font-size: 0.75em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.55rem;
+    color: var(--muted);
+    text-align: right;
+    user-select: none;
+    overflow: hidden;
+    white-space: pre;
+    border-right: 1px solid var(--border);
+    opacity: 0.8;
   }
 
   .footer {

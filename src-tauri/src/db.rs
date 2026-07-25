@@ -18,7 +18,8 @@ const SCHEMA_SQL: &str = "CREATE TABLE IF NOT EXISTS folders (
         updated_at TEXT NOT NULL,
         is_markdown INTEGER NOT NULL DEFAULT 0,
         is_locked INTEGER NOT NULL DEFAULT 0,
-        sort_order INTEGER NOT NULL DEFAULT 0
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        show_line_numbers INTEGER NOT NULL DEFAULT 0
     );";
 
 /// Holds the live connection to whichever database is currently active.
@@ -63,6 +64,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
     migrate_add_markdown_column(conn);
     migrate_add_locked_column(conn);
     migrate_add_sort_order_column(conn);
+    migrate_add_show_line_numbers_column(conn);
 
     conn.execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|e| e.to_string())?;
@@ -318,6 +320,17 @@ fn migrate_add_sort_order_column(conn: &Connection) {
     }
 }
 
+/// Adds the per-note line-number-gutter toggle to existing databases created
+/// before it existed. Fresh installs already get the column via CREATE
+/// TABLE above.
+fn migrate_add_show_line_numbers_column(conn: &Connection) {
+    if column_exists(conn, "show_line_numbers") {
+        return;
+    }
+    conn.execute_batch("ALTER TABLE notes ADD COLUMN show_line_numbers INTEGER NOT NULL DEFAULT 0;")
+        .expect("failed to add show_line_numbers column");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,6 +494,7 @@ mod tests {
         assert!(column_exists(&conn, "is_markdown"));
         assert!(column_exists(&conn, "is_locked"));
         assert!(column_exists(&conn, "sort_order"));
+        assert!(column_exists(&conn, "show_line_numbers"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -593,6 +607,39 @@ mod tests {
 
         // Safe to rerun.
         migrate_add_sort_order_column(&conn);
+    }
+
+    #[test]
+    fn migrate_add_show_line_numbers_column_adds_it_to_existing_databases() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL DEFAULT 'Untitled',
+                content TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                parent_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+                is_markdown INTEGER NOT NULL DEFAULT 0,
+                is_locked INTEGER NOT NULL DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO notes (title, content, created_at, updated_at, parent_id)
+            VALUES ('Existing note', '', '2026-01-01T00:00:00', '2026-01-01T00:00:00', NULL);",
+        )
+        .unwrap();
+
+        assert!(!column_exists(&conn, "show_line_numbers"));
+        migrate_add_show_line_numbers_column(&conn);
+        assert!(column_exists(&conn, "show_line_numbers"));
+
+        let show_line_numbers: bool = conn
+            .query_row("SELECT show_line_numbers FROM notes WHERE title = 'Existing note'", [], |r| r.get(0))
+            .unwrap();
+        assert!(!show_line_numbers, "existing notes should default to no line numbers");
+
+        // Safe to rerun.
+        migrate_add_show_line_numbers_column(&conn);
     }
 
     #[test]
