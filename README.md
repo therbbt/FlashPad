@@ -16,6 +16,8 @@ jot something down in a tree of notes, and hide it again.
 - **Quick inserts** — dividers, timestamps, and datelines via keyboard
   shortcuts.
 - **Note locking** — protect a note from accidental edits.
+- **Line numbers** — optional per-note gutter for plain text notes, toggled
+  with `Alt+R`. Off by default.
 - **Themeable** — light/dark mode, each with its own independently
   selectable color palette (FlashPad's own light/dark looks, or Catppuccin
   Latte/Frappé/Macchiato/Mocha).
@@ -37,6 +39,7 @@ jot something down in a tree of notes, and hide it again.
 | `Alt+L` | Lock / unlock the current note |
 | `Alt+D` | Delete the current note (and its subnotes) |
 | `Alt+M` | Toggle Markdown view |
+| `Alt+R` | Toggle line numbers (plain text notes) |
 | `Alt+O` | Open the link under the caret (Markdown view) |
 | `Alt+B` | Switch to the next database |
 | `Alt+1` | Insert a divider line |

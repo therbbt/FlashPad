@@ -19,6 +19,7 @@
         ['Alt+L', 'Lock / unlock the current note'],
         ['Alt+D', 'Delete the current note (and its subnotes)'],
         ['Alt+M', 'Toggle Markdown view'],
+        ['Alt+R', 'Toggle line numbers (plain text notes)'],
       ] as [string, string][],
     },
     {
