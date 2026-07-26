@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import type { Update } from '@tauri-apps/plugin-updater';
   import { relaunch } from '@tauri-apps/plugin-process';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import MarkdownEditor from './MarkdownEditor.svelte';
   import { isAllowedLinkUrl } from '../utils/links';
+  import { fetchReleaseNotes } from '../services/releaseNotesService';
 
   export let update: Update;
   // Covers both "Not now" and closing the dialog any other way (X, Escape,
@@ -15,6 +17,24 @@
   let installing = false;
   let progressLabel = '';
   let errorMessage = '';
+
+  // The updater's own manifest (latest.json) is the primary source for
+  // release notes, but its "notes" field can end up empty (e.g. a release
+  // published without going through the notes-sync step) - rather than
+  // leave the dialog saying "No release notes provided.", fall back to
+  // fetching that exact version's real notes directly from GitHub.
+  let fallbackBody = '';
+  $: displayBody = update.body || fallbackBody;
+
+  onMount(() => {
+    if (!update.body) {
+      void fetchReleaseNotes(update.version)
+        .then((notes) => {
+          if (notes?.body) fallbackBody = notes.body;
+        })
+        .catch(() => {});
+    }
+  });
 
   // Release notes are read-only, but a link in them (e.g. to the full
   // changelog) should still open - same protocol check as the notes
@@ -95,9 +115,9 @@
       <p class="date">Released {formattedDate}</p>
     {/if}
 
-    {#if update.body}
+    {#if displayBody}
       <div class="notes">
-        <MarkdownEditor content={update.body} noteId={0} onUpdate={() => {}} onOpenLink={openNotesLink} editable={false} />
+        <MarkdownEditor content={displayBody} noteId={0} onUpdate={() => {}} onOpenLink={openNotesLink} editable={false} />
       </div>
     {:else}
       <p class="notes empty">No release notes provided.</p>
