@@ -12,7 +12,9 @@ jot something down in a tree of notes, and hide it again.
   notes and subnotes.
 - **Markdown editor** — rich text editing powered by Tiptap, with markdown
   shortcuts for headings and formatting. Links open in your default browser
-  (Ctrl+Click, a plain click on a locked note, right-click, or Alt+O).
+  (Ctrl+Click, a plain click on a locked note, right-click, or Alt+O). Paste
+  or drag-and-drop an image (PNG/JPEG/GIF/WebP) to embed it in the note;
+  large images are downscaled automatically.
 - **Quick inserts** — dividers, timestamps, and datelines via keyboard
   shortcuts.
 - **Note locking** — protect a note from accidental edits.

@@ -3,11 +3,17 @@
   import { Editor } from '@tiptap/core';
   import StarterKit from '@tiptap/starter-kit';
   import TiptapLink from '@tiptap/extension-link';
+  import Image from '@tiptap/extension-image';
   import Placeholder from '@tiptap/extension-placeholder';
   import TaskList from '@tiptap/extension-task-list';
   import TaskItem from '@tiptap/extension-task-item';
   import { Markdown } from 'tiptap-markdown';
+  import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { isAllowedLinkUrl } from '../utils/links';
+  import { isAllowedImageMimeType, isAllowedImagePath } from '../utils/images';
+  import { readDroppedImage } from '../services/imagesService';
+
+  const isTauriRuntime = () => typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 
   export let content: string;
   export let noteId: number;
@@ -125,9 +131,133 @@
     }
   };
 
+  // Images are embedded directly in the note as base64 data: URIs rather
+  // than saved as separate files - the whole app is built around "one
+  // .sqlite3 file is a complete, portable database" (multi-database
+  // support, backup, export/import all assume this), and a data URI keeps
+  // that invariant fully intact with no schema/storage changes at all.
+  const MAX_IMAGE_DIMENSION = 1600;
+  const DOWNSCALED_JPEG_QUALITY = 0.85;
+
+  const readAsDataUrl = (blob: Blob): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+
+  // Downscales only if the image actually exceeds MAX_IMAGE_DIMENSION on
+  // either side - otherwise reads the original bytes untouched, preserving
+  // quality and (for GIFs) animation exactly. An oversized GIF is the one
+  // exception: canvas can only ever capture a single frame, so downscaling
+  // one necessarily flattens its animation - re-encoded as PNG in that case
+  // to at least keep transparency, rather than as a static "GIF".
+  const toEmbeddableDataUrl = async (file: File): Promise<string> => {
+    let bitmap: ImageBitmap;
+    try {
+      bitmap = await createImageBitmap(file);
+    } catch {
+      // Decode failed for some reason - embed the original bytes rather
+      // than dropping the paste/drop entirely.
+      return readAsDataUrl(file);
+    }
+    try {
+      if (bitmap.width <= MAX_IMAGE_DIMENSION && bitmap.height <= MAX_IMAGE_DIMENSION) {
+        return await readAsDataUrl(file);
+      }
+      const scale = MAX_IMAGE_DIMENSION / Math.max(bitmap.width, bitmap.height);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(bitmap.width * scale);
+      canvas.height = Math.round(bitmap.height * scale);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return await readAsDataUrl(file);
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const outputType = file.type === 'image/gif' ? 'image/png' : file.type;
+      return canvas.toDataURL(outputType, DOWNSCALED_JPEG_QUALITY);
+    } finally {
+      bitmap.close();
+    }
+  };
+
+  const insertImageFile = async (file: File) => {
+    if (!isAllowedImageMimeType(file.type)) return;
+    const src = await toEmbeddableDataUrl(file);
+    editor?.chain().focus().setImage({ src, alt: file.name || '' }).run();
+  };
+
+  // Real desktop drag-and-drop (from a file manager, over Tauri's native
+  // onDragDropEvent - see below) only ever gives us a filesystem path, never
+  // a File with real bytes: on Linux/WebKitGTK the DOM's own `drop` event
+  // carries no file payload at all for OS-originated drags (only a
+  // text/uri-list string), so we read the bytes on the Rust side instead and
+  // route the resulting data: URI through the same downscale pipeline as a
+  // pasted file.
+  const insertImageFromPath = async (path: string) => {
+    if (!editable) return;
+    try {
+      const dataUrl = await readDroppedImage(path);
+      const blob = await (await fetch(dataUrl)).blob();
+      const name = path.split(/[\\/]/).pop() || 'image';
+      await insertImageFile(new File([blob], name, { type: blob.type }));
+    } catch (error) {
+      console.error('Failed to embed dropped image', error);
+    }
+  };
+
+  // Only intercepts when the clipboard/drop actually contains an image -
+  // anything else (plain text, etc.) is left completely alone so normal
+  // paste/drop behavior is unaffected.
+  const handleImagePaste = (event: ClipboardEvent) => {
+    if (!editable) return;
+    const items = event.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.kind === 'file' && isAllowedImageMimeType(item.type)) {
+        const file = item.getAsFile();
+        if (!file) continue;
+        event.preventDefault();
+        void insertImageFile(file);
+        return;
+      }
+    }
+  };
+
+  const handleImageDrop = (event: DragEvent) => {
+    if (!editable) return;
+    const files = event.dataTransfer?.files;
+    if (!files) return;
+    const imageFiles = Array.from(files).filter((file) => isAllowedImageMimeType(file.type));
+    if (!imageFiles.length) return;
+    event.preventDefault();
+    for (const file of imageFiles) {
+      void insertImageFile(file);
+    }
+  };
+
+  // Only set when running under Tauri (see isTauriRuntime above) - unused in
+  // the plain-browser dev/preview fallback, which relies on handleImageDrop
+  // (the DOM 'drop' listener below) instead.
+  let unlistenDragDrop: (() => void) | undefined;
+
   onMount(() => {
     element.addEventListener('click', handleLinkClick, true);
     element.addEventListener('change', handleTaskCheckboxChange);
+    element.addEventListener('paste', handleImagePaste, true);
+    element.addEventListener('drop', handleImageDrop, true);
+
+    if (isTauriRuntime()) {
+      void getCurrentWebviewWindow()
+        .onDragDropEvent((event) => {
+          if (event.payload.type !== 'drop') return;
+          for (const path of event.payload.paths) {
+            if (isAllowedImagePath(path)) void insertImageFromPath(path);
+          }
+        })
+        .then((unlisten) => {
+          unlistenDragDrop = unlisten;
+        });
+    }
 
     editor = new Editor({
       element,
@@ -154,6 +284,15 @@
           // opening links ourselves; there's no click path we want the
           // native anchor behavior to handle.
           HTMLAttributes: { rel: 'noopener noreferrer nofollow', target: null },
+        }),
+        Image.configure({
+          inline: false,
+          // We construct our own data: URIs (see toEmbeddableDataUrl above)
+          // rather than letting arbitrary pasted HTML through, but this
+          // still needs enabling - the extension's default parseHTML
+          // rejects `data:` src values otherwise.
+          allowBase64: true,
+          HTMLAttributes: { loading: 'lazy' },
         }),
         Placeholder.configure({ placeholder }),
         TaskList,
@@ -201,6 +340,9 @@
   onDestroy(() => {
     element.removeEventListener('click', handleLinkClick, true);
     element.removeEventListener('change', handleTaskCheckboxChange);
+    element.removeEventListener('paste', handleImagePaste, true);
+    element.removeEventListener('drop', handleImageDrop, true);
+    unlistenDragDrop?.();
     editor?.destroy();
   });
 </script>
@@ -342,5 +484,13 @@
     border: none;
     border-top: 1px solid var(--border);
     margin: 0.8em 0;
+  }
+
+  .markdown-editor :global(.tiptap img) {
+    max-width: 100%;
+    height: auto;
+    border-radius: 0.3rem;
+    display: block;
+    margin: 0.4em 0;
   }
 </style>
