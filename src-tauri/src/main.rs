@@ -208,8 +208,14 @@ fn main() {
         .plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("navigation-guard")
                 .on_navigation(|_webview, url| {
+                    // Tauri's custom protocol serves the frontend over
+                    // https://tauri.localhost on macOS/Linux but
+                    // http://tauri.localhost on Windows/Android (avoids
+                    // mixed-content issues with ws:// there) - requiring
+                    // https unconditionally blocked the app's own initial
+                    // load on Windows, leaving a permanently blank window.
                     let allowed = url.scheme() == "tauri"
-                        || (url.scheme() == "https" && url.host_str() == Some("tauri.localhost"))
+                        || (matches!(url.scheme(), "http" | "https") && url.host_str() == Some("tauri.localhost"))
                         || (cfg!(debug_assertions) && url.host_str() == Some("127.0.0.1"));
                     if !allowed {
                         eprintln!("[flashpad] blocked navigation to: {url}");
