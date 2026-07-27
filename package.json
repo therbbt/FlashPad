@@ -1,7 +1,7 @@
 {
   "name": "flashpad",
   "private": true,
-  "version": "0.9.0",
+  "version": "0.9.1",
   "type": "module",
   "description": "Global-hotkey quick-notes desktop app",
   "author": "therbbt",
@@ -28,6 +28,7 @@
     "@tauri-apps/plugin-store": "^2.0.0",
     "@tauri-apps/plugin-updater": "^2.0.0",
     "@tiptap/core": "^3.27.4",
+    "@tiptap/extension-image": "3.27.4",
     "@tiptap/extension-link": "3.27.4",
     "@tiptap/extension-placeholder": "^3.27.4",
     "@tiptap/extension-task-item": "^3.27.4",

@@ -2,6 +2,7 @@
 
 mod backup;
 mod db;
+mod images;
 mod notes;
 mod profiles;
 mod scheduler;
@@ -222,6 +223,7 @@ fn main() {
             frontend_ready,
             get_hotkey,
             set_hotkey,
+            images::read_dropped_image,
             notes::list_notes,
             notes::create_note,
             notes::update_note,
