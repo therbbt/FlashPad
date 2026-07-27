@@ -3,7 +3,7 @@
   import { Editor } from '@tiptap/core';
   import StarterKit from '@tiptap/starter-kit';
   import TiptapLink from '@tiptap/extension-link';
-  import Image from '@tiptap/extension-image';
+  import TiptapImage from '@tiptap/extension-image';
   import Placeholder from '@tiptap/extension-placeholder';
   import TaskList from '@tiptap/extension-task-list';
   import TaskItem from '@tiptap/extension-task-item';
@@ -40,6 +40,56 @@
     renderHTML(props) {
       const [tag, attrs, content] = (this.parent?.(props) ?? ['a', props.HTMLAttributes, 0]) as [string, Record<string, unknown>, number];
       return [tag, { ...attrs, title: attrs.title ?? attrs.href ?? null }, content];
+    },
+  });
+
+  const escapeHtmlAttr = (value: string) => value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Extended so a resized image's width/height survive being saved and
+  // reloaded. tiptap-markdown does NOT use @tiptap/extension-image's own
+  // parseMarkdown/renderMarkdown fields - it looks up serialization by node
+  // NAME in its own bundled registry (tiptap-markdown/extensions/nodes/
+  // image.js), which just delegates to prosemirror-markdown's default image
+  // serializer (plain `![alt](src)`, no size). addStorage() here overrides
+  // that lookup for this schema's "image" node specifically. Plain markdown
+  // has no syntax for width/height, so once an image has been resized we
+  // fall back to serializing it as a raw <img> tag instead - tiptap-markdown
+  // parses embedded HTML (html: true, the Markdown extension's default)
+  // back into the doc via this node's own parseHTML(), which already reads
+  // width/height like any other attribute, so the default (empty) parse
+  // spec still works unchanged.
+  const ResizableImage = TiptapImage.extend({
+    addStorage() {
+      return {
+        markdown: {
+          serialize(state: { write: (text: string) => void; esc: (text: string) => string; quote: (text: string) => string }, node: { attrs: Record<string, unknown> }) {
+            const { src, alt, title, width, height } = node.attrs as {
+              src?: string;
+              alt?: string;
+              title?: string;
+              width?: number;
+              height?: number;
+            };
+            if (!width && !height) {
+              state.write(`![${state.esc(alt || '')}](${state.esc(src || '')}${title ? ` ${state.quote(title)}` : ''})`);
+              return;
+            }
+            const attrs: [string, string | undefined][] = [
+              ['src', src],
+              ['alt', alt],
+              ['title', title],
+              ['width', width != null ? String(width) : undefined],
+              ['height', height != null ? String(height) : undefined],
+            ];
+            const attrString = attrs
+              .filter((entry): entry is [string, string] => Boolean(entry[1]))
+              .map(([key, value]) => `${key}="${escapeHtmlAttr(value)}"`)
+              .join(' ');
+            state.write(`<img ${attrString}>`);
+          },
+          parse: {},
+        },
+      };
     },
   });
 
@@ -285,7 +335,7 @@
           // native anchor behavior to handle.
           HTMLAttributes: { rel: 'noopener noreferrer nofollow', target: null },
         }),
-        Image.configure({
+        ResizableImage.configure({
           inline: false,
           // We construct our own data: URIs (see toEmbeddableDataUrl above)
           // rather than letting arbitrary pasted HTML through, but this
@@ -293,6 +343,10 @@
           // rejects `data:` src values otherwise.
           allowBase64: true,
           HTMLAttributes: { loading: 'lazy' },
+          // Built into @tiptap/extension-image - draws corner drag handles
+          // (styled below) and persists the final size via updateAttributes,
+          // which renderMarkdown above then serializes.
+          resize: { enabled: true, minWidth: 40, minHeight: 40 },
         }),
         Placeholder.configure({ placeholder }),
         TaskList,
@@ -492,5 +546,49 @@
     border-radius: 0.3rem;
     display: block;
     margin: 0.4em 0;
+  }
+
+  /* Resize handles come from @tiptap/extension-image's built-in
+     ResizableNodeView (see ResizableImage above) - it wraps each image in
+     [data-resize-container] > [data-resize-wrapper] > img and creates
+     unstyled [data-resize-handle] divs, positioned via inline styles
+     (top/right/bottom/left: 0) but otherwise bare, so all visual styling
+     lives here. */
+  .markdown-editor :global([data-resize-container]) {
+    max-width: 100%;
+  }
+
+  .markdown-editor :global([data-resize-handle]) {
+    width: 0.6rem;
+    height: 0.6rem;
+    background: var(--accent);
+    border: 1.5px solid var(--panel);
+    border-radius: 2px;
+    opacity: 0;
+    transition: opacity 0.1s ease;
+  }
+
+  .markdown-editor :global([data-resize-wrapper]:hover [data-resize-handle]) {
+    opacity: 1;
+  }
+
+  .markdown-editor :global([data-resize-handle='top-left']) {
+    cursor: nwse-resize;
+    transform: translate(-50%, -50%);
+  }
+
+  .markdown-editor :global([data-resize-handle='bottom-right']) {
+    cursor: nwse-resize;
+    transform: translate(50%, 50%);
+  }
+
+  .markdown-editor :global([data-resize-handle='top-right']) {
+    cursor: nesw-resize;
+    transform: translate(50%, -50%);
+  }
+
+  .markdown-editor :global([data-resize-handle='bottom-left']) {
+    cursor: nesw-resize;
+    transform: translate(-50%, 50%);
   }
 </style>
