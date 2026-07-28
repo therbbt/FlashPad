@@ -6,6 +6,7 @@ mod images;
 mod notes;
 mod profiles;
 mod scheduler;
+mod search;
 
 use db::{DbState, DbStatusState};
 use std::path::Path;
@@ -231,6 +232,7 @@ fn main() {
             set_hotkey,
             images::read_dropped_image,
             notes::list_notes,
+            search::list_notes_from_other_databases,
             notes::create_note,
             notes::update_note,
             notes::save_checklist_toggle,

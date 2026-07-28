@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { NoteRecord } from './notesService';
 
 const isTauriRuntime = () => typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 
@@ -7,6 +8,11 @@ export interface DatabaseProfile {
   name: string;
   path: string;
   createdAt: string;
+}
+
+export interface CrossDatabaseNote extends NoteRecord {
+  databaseId: number;
+  databaseName: string;
 }
 
 export interface BackupSettings {
@@ -40,6 +46,14 @@ export class DatabaseService {
   async listDatabases(): Promise<DatabaseProfile[]> {
     if (!isTauriRuntime()) return [];
     return await invoke<DatabaseProfile[]>('list_databases');
+  }
+
+  // Notes from every registered database EXCEPT the active one - used to
+  // build the "search all databases" toggle in App.svelte. The active
+  // database's own notes are already loaded via notesService.list().
+  async listNotesFromOtherDatabases(): Promise<CrossDatabaseNote[]> {
+    if (!isTauriRuntime()) return [];
+    return await invoke<CrossDatabaseNote[]>('list_notes_from_other_databases');
   }
 
   async createDatabase(name: string, path: string): Promise<DatabaseProfile> {

@@ -26,7 +26,8 @@ jot something down in a tree of notes, and hide it again.
 - **Autostart on login**.
 - **Local storage** — notes are persisted locally via a SQLite-backed store;
   manage multiple databases, switch between them, and rely on automatic
-  local backups with import/export.
+  local backups with import/export. Optionally search across every
+  registered database at once, not just the active one.
 - **Automatic updates** — checks GitHub Releases on startup and shows an
   unobtrusive notification (with changelog) when a new version is
   available. Nothing downloads until you confirm.
