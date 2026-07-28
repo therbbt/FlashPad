@@ -5,7 +5,7 @@
   import { SettingsService, type FlashPadSettings } from './lib/services/settingsService';
   import { DEFAULT_DARK_PALETTE_ID, DEFAULT_LIGHT_PALETTE_ID, applyPalette, getPalette } from './lib/theme/palettes';
   import { HotkeyService } from './lib/services/hotkeyService';
-  import { DatabaseService, type AppState, type DatabaseProfile } from './lib/services/databaseService';
+  import { DatabaseService, type AppState, type DatabaseProfile, type CrossDatabaseNote } from './lib/services/databaseService';
   import TreeNode, { type TreeItem } from './lib/components/TreeNode.svelte';
   import ContextMenu, { type ContextMenuItem } from './lib/components/ContextMenu.svelte';
   import ShortcutsPanel from './lib/components/ShortcutsPanel.svelte';
@@ -33,6 +33,10 @@
   const SIDEBAR_MIN_WIDTH = 80;
   const SIDEBAR_MAX_WIDTH = 480;
   const DEFAULT_SIDEBAR_WIDTH = 260;
+
+  // A note from the active database (no databaseId) or from another one via
+  // the "search all databases" toggle (see searchableNotes below).
+  type SearchableNote = NoteRecord & { databaseId?: number; databaseName?: string };
 
   let notes: NoteRecord[] = [];
   let selectedId: number | null = null;
@@ -80,6 +84,15 @@
   let title = 'Untitled';
   let titleAutoDerive = true;
   let query = '';
+  // Off by default - opt-in, mirrors how other background-work features in
+  // this app (line numbers, updates) are explicit rather than automatic.
+  // Only ever meaningful with 2+ registered databases.
+  let searchAllDatabases = false;
+  // Cache of every OTHER database's notes, refreshed on toggle and after a
+  // database switch (see refreshOtherDatabaseNotes) - NOT refetched per
+  // keystroke, so search stays instant client-side filtering exactly like
+  // the single-database case, just over a merged array.
+  let otherDatabaseNotes: CrossDatabaseNote[] = [];
   let status = 'Ready';
   let theme: FlashPadSettings['theme'] = 'dark';
   let lightPaletteId = DEFAULT_LIGHT_PALETTE_ID;
@@ -219,13 +232,21 @@
   $: tree = buildTree(notes);
   $: normalizedQuery = query.trim().toLowerCase();
   $: isSearching = normalizedQuery.length > 0;
+  // Merges in the cached other-database notes only when the toggle is on -
+  // otherDatabaseNotes already carries databaseId/databaseName (from
+  // CrossDatabaseNote), which a plain NoteRecord simply doesn't have, so
+  // this stays a normal instant client-side filter either way.
+  $: searchableNotes = (searchAllDatabases && databases.length > 1 ? [...notes, ...otherDatabaseNotes] : notes) as SearchableNote[];
   $: searchResults = isSearching
-    ? notes
+    ? searchableNotes
         .filter((n) => `${n.title} ${n.content}`.toLowerCase().includes(normalizedQuery))
         .sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }))
     : [];
   $: visibleFlat = isSearching
-    ? searchResults.map((n) => ({ key: `note:${n.id}`, item: { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown, isLocked: n.isLocked, createdAt: n.createdAt, sortOrder: n.sortOrder } as TreeItem }))
+    ? searchResults.map((n) => ({
+        key: `note:${n.id}`,
+        item: { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown, isLocked: n.isLocked, createdAt: n.createdAt, sortOrder: n.sortOrder, databaseId: n.databaseId, databaseName: n.databaseName } as TreeItem,
+      }))
     : flattenVisible(tree, expandedNotes);
   $: if (visibleFlat.length && !visibleFlat.some((v) => v.key === focusedKey)) {
     focusedKey = visibleFlat[0].key;
@@ -289,6 +310,20 @@
     startupError = null;
     resetNoteScopedState();
     await initializeNotes();
+    // Keep the cross-database cache correct relative to whichever database
+    // just became active (the note just opened moves from "other" to
+    // "active" and should stop showing a badge) - only worth the round
+    // trip when the toggle is actually on.
+    if (searchAllDatabases) await refreshOtherDatabaseNotes();
+  };
+
+  const refreshOtherDatabaseNotes = async () => {
+    otherDatabaseNotes = await databaseService.listNotesFromOtherDatabases();
+  };
+
+  const toggleSearchAllDatabases = () => {
+    searchAllDatabases = !searchAllDatabases;
+    if (searchAllDatabases) void refreshOtherDatabaseNotes();
   };
 
   // Cycles to the next database in the list (wrapping around) - lets Alt+B
@@ -349,6 +384,26 @@
     if (note) selectNote(note, focusEditor);
   };
 
+  // Used for search results specifically (both click and Enter-to-cycle) -
+  // a result from a different database must switch the active database
+  // first (the only way to read/edit a non-active database's notes today -
+  // see switchToDatabase above), then open the note normally. Query and the
+  // cross-database toggle survive the switch even though
+  // resetNoteScopedState (run by every other switch-database path) clears
+  // the search box - that's the right default for Alt+B/manual switches,
+  // just not for "I clicked a search result".
+  const openSearchResult = async (id: number, databaseId?: number) => {
+    if (databaseId != null && databaseId !== activeDatabaseId) {
+      // switchToDatabase -> applyAppState already refreshes
+      // otherDatabaseNotes (when the toggle is on) as part of its normal
+      // post-switch sequence - no need to do it again here.
+      const savedQuery = query;
+      await switchToDatabase(databaseId);
+      query = savedQuery;
+    }
+    await openNote(id);
+  };
+
   // Alt+T - toggles keyboard focus between the notes menu and the open
   // note's editor. Direction is derived from where focus actually is
   // (rather than tracked separately) so it stays correct no matter how
@@ -378,7 +433,7 @@
       : (searchMatchIndex + direction + searchResults.length) % searchResults.length;
     const match = searchResults[nextIndex];
     focusedKey = `note:${match.id}`;
-    void openNote(match.id);
+    void openSearchResult(match.id, match.databaseId);
   };
 
   const saveActiveNote = async () => {
@@ -980,7 +1035,7 @@
     draggingId,
     dropDisabledIds,
     onToggleExpand: toggleExpand,
-    onSelectNote: (id: number) => void openNote(id),
+    onSelectNote: (id: number, databaseId?: number) => void openSearchResult(id, databaseId),
     onNoteContextMenu: openNoteMenu,
     onFocusItem: (key: string) => {
       focusedKey = key;
@@ -1564,7 +1619,25 @@
 
     <footer class="footer" on:contextmenu|preventDefault>
       <div class="search-box">
-        <input class="search-input" bind:value={query} on:keydown={handleTreeKeydown} placeholder="Search notes" />
+        <div class="search-input-wrap">
+          <input class="search-input" class:with-scope-btn={databases.length > 1} bind:value={query} on:keydown={handleTreeKeydown} placeholder="Search notes" />
+          {#if databases.length > 1}
+            <button
+              class="search-scope-btn"
+              class:active={searchAllDatabases}
+              on:click={toggleSearchAllDatabases}
+              aria-pressed={searchAllDatabases}
+              aria-label="Search all databases"
+              title="Search all databases"
+            >
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="8" cy="8" r="6.2" />
+                <ellipse cx="8" cy="8" rx="2.6" ry="6.2" />
+                <path d="M1.9 5.8h12.2M1.9 10.2h12.2" />
+              </svg>
+            </button>
+          {/if}
+        </div>
         {#if isSearching}
           <span class="search-count">{searchResults.length ? `${searchMatchIndex + 1}/${searchResults.length}` : '0/0'}</span>
           <button
@@ -2198,15 +2271,26 @@
     flex-shrink: 0;
   }
 
-  .footer .search-input {
+  .search-input-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
     width: 200px;
     flex-shrink: 0;
+  }
+
+  .footer .search-input {
+    width: 100%;
     border: 1px solid var(--border);
     border-radius: 0.5rem;
     background: var(--panel-2);
     color: inherit;
     font-size: 0.8rem;
     padding: 0.35rem 0.6rem;
+  }
+
+  .footer .search-input.with-scope-btn {
+    padding-right: 1.95rem;
   }
 
   .search-count {
@@ -2249,6 +2333,33 @@
   .search-nav-btn:disabled {
     opacity: 0.4;
     cursor: default;
+  }
+
+  .search-scope-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    right: 0.25rem;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 1.5rem;
+    height: 1.5rem;
+    border: none;
+    border-radius: 0.3rem;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+  }
+
+  .search-scope-btn:hover {
+    color: var(--text);
+  }
+
+  .search-scope-btn.active,
+  .search-scope-btn.active:hover {
+    background: rgba(77, 208, 200, 0.16);
+    color: #4dd0c8;
   }
 
   .link-toast {

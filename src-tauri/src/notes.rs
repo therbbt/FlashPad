@@ -1,6 +1,6 @@
 use crate::db::DbState;
 use regex::Regex;
-use rusqlite::{params, Row};
+use rusqlite::{params, Connection, Row};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
@@ -108,10 +108,10 @@ fn find_note(conn: &rusqlite::Connection, id: i64) -> Result<Note, String> {
     .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub fn list_notes(db: State<DbState>) -> Result<Vec<Note>, String> {
-    let guard = db.0.lock().map_err(|e| e.to_string())?;
-    let conn = guard.as_ref().ok_or("No database is currently available")?;
+/// Fetches every note from an already-open connection. Factored out of
+/// `list_notes` so `search.rs` can reuse the exact same query/row-mapping
+/// against other databases' connections, rather than duplicating it.
+pub(crate) fn fetch_all(conn: &Connection) -> Result<Vec<Note>, String> {
     let mut stmt = conn
         .prepare(&format!(
             "SELECT {SELECT_COLUMNS} FROM notes ORDER BY updated_at DESC"
@@ -123,6 +123,13 @@ pub fn list_notes(db: State<DbState>) -> Result<Vec<Note>, String> {
         .filter_map(Result::ok)
         .collect();
     Ok(notes)
+}
+
+#[tauri::command]
+pub fn list_notes(db: State<DbState>) -> Result<Vec<Note>, String> {
+    let guard = db.0.lock().map_err(|e| e.to_string())?;
+    let conn = guard.as_ref().ok_or("No database is currently available")?;
+    fetch_all(conn)
 }
 
 #[tauri::command]

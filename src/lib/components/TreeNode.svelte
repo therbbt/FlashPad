@@ -7,6 +7,11 @@
     isLocked: boolean;
     createdAt: string;
     sortOrder: number;
+    // Set only for cross-database search results (see App.svelte's
+    // searchAllDatabases toggle) - undefined for notes in the active
+    // database, which don't need a badge or a database switch to open.
+    databaseId?: number;
+    databaseName?: string;
   }
 
   export type DropZone = 'before' | 'inside' | 'after';
@@ -21,7 +26,7 @@
   export let draggingId: number | null = null;
   export let dropDisabledIds: Set<number> = new Set();
   export let onToggleExpand: (id: number) => void;
-  export let onSelectNote: (id: number) => void;
+  export let onSelectNote: (id: number, databaseId?: number) => void;
   export let onNoteContextMenu: (event: MouseEvent, noteId: number) => void;
   export let onFocusItem: (key: string) => void;
   export let onRenameCommit: (key: string, value: string) => void;
@@ -89,7 +94,7 @@
   draggable="true"
   on:click={() => {
     onFocusItem(key);
-    onSelectNote(item.id);
+    onSelectNote(item.id, item.databaseId);
     if (hasChildren) onToggleExpand(item.id);
   }}
   on:contextmenu|preventDefault|stopPropagation={(e) => {
@@ -100,7 +105,7 @@
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       onFocusItem(key);
-      onSelectNote(item.id);
+      onSelectNote(item.id, item.databaseId);
       if (hasChildren) onToggleExpand(item.id);
     }
   }}
@@ -176,6 +181,9 @@
     />
   {:else}
     <span class="label">{item.title || 'Untitled'}</span>
+  {/if}
+  {#if item.databaseName}
+    <span class="db-badge">{item.databaseName}</span>
   {/if}
   {#if item.isLocked}
     <svg class="icon lock-icon" width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
@@ -299,6 +307,15 @@
   .label {
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .db-badge {
+    flex-shrink: 0;
+    font-size: 0.65rem;
+    color: var(--accent-soft, var(--muted));
+    border: 1px solid var(--border);
+    border-radius: 0.3rem;
+    padding: 0.05rem 0.35rem;
   }
 
   .lock-icon {
