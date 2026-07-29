@@ -5,12 +5,17 @@
   import { SettingsService, type FlashPadSettings } from './lib/services/settingsService';
   import { DEFAULT_DARK_PALETTE_ID, DEFAULT_LIGHT_PALETTE_ID, applyPalette, getPalette } from './lib/theme/palettes';
   import { HotkeyService } from './lib/services/hotkeyService';
-  import { DatabaseService, type AppState, type DatabaseProfile, type CrossDatabaseNote } from './lib/services/databaseService';
+  import { DatabaseService, type AppState } from './lib/services/databaseService';
   import TreeNode, { type TreeItem } from './lib/components/TreeNode.svelte';
+  import SidebarResizer from './lib/components/SidebarResizer.svelte';
+  import NoteInfoPopover from './lib/components/NoteInfoPopover.svelte';
   import ContextMenu, { type ContextMenuItem } from './lib/components/ContextMenu.svelte';
   import ShortcutsPanel from './lib/components/ShortcutsPanel.svelte';
   import SettingsPanel from './lib/components/SettingsPanel.svelte';
+  import ActionToolbar from './lib/components/ActionToolbar.svelte';
+  import Footer from './lib/components/Footer.svelte';
   import MarkdownEditor from './lib/components/MarkdownEditor.svelte';
+  import PlainTextEditor from './lib/components/PlainTextEditor.svelte';
   import MarkdownHelpPanel from './lib/components/MarkdownHelpPanel.svelte';
   import ConfirmDialog from './lib/components/ConfirmDialog.svelte';
   import TitleBar from './lib/components/TitleBar.svelte';
@@ -18,35 +23,54 @@
   import UpdateToast from './lib/components/UpdateToast.svelte';
   import UpdateDialog from './lib/components/UpdateDialog.svelte';
   import { check as checkForUpdate, type Update } from '@tauri-apps/plugin-updater';
-  import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { isAllowedLinkUrl } from './lib/utils/links';
+  import {
+    notes,
+    selectedId,
+    activeParentId,
+    expandedNotes,
+    focusedKey,
+    renamingKey,
+    draggingId,
+    clipboard,
+    tree,
+    dropDisabledIds,
+    flattenVisible,
+  } from './lib/stores/notesStore';
+  import * as notesStore from './lib/stores/notesStore';
+  import { status } from './lib/stores/statusStore';
+  import {
+    databases,
+    activeDatabaseId,
+    startupError,
+    searchAllDatabases,
+    otherDatabaseNotes,
+    activeDatabaseName,
+  } from './lib/stores/databaseStore';
+  import * as databaseStore from './lib/stores/databaseStore';
 
   const notesService = new NotesService();
   const settingsService = new SettingsService();
   const hotkeyService = new HotkeyService();
   const databaseService = new DatabaseService();
 
-  const EXPANDED_KEY = 'flashpad.expandedFolders';
-  const SIDEBAR_WIDTH_KEY = 'flashpad.sidebarWidth';
-  const SIDEBAR_MIN_WIDTH = 80;
-  const SIDEBAR_MAX_WIDTH = 480;
-  const DEFAULT_SIDEBAR_WIDTH = 260;
-
   // A note from the active database (no databaseId) or from another one via
   // the "search all databases" toggle (see searchableNotes below).
   type SearchableNote = NoteRecord & { databaseId?: number; databaseName?: string };
 
-  let notes: NoteRecord[] = [];
-  let selectedId: number | null = null;
-  let activeParentId: number | null = null;
-  let expandedNotes: Set<number> = new Set();
-  let focusedKey: string | null = null;
-  let renamingKey: string | null = null;
+  // Each database has its own independent id sequence, so a plain
+  // `note:${id}` key can collide between two different databases' notes
+  // once cross-database search results are merged in - tag the key with
+  // databaseId whenever it's set so Svelte's keyed each-blocks (and
+  // focusedKey tracking) never conflate two different notes that happen to
+  // share the same numeric id. Notes from the active database (no
+  // databaseId) keep the exact same key format as before.
+  const searchResultKey = (note: SearchableNote): string =>
+    note.databaseId != null ? `note:${note.databaseId}:${note.id}` : `note:${note.id}`;
   let contextMenu: { x: number; y: number; items: ContextMenuItem[] } | null = null;
   let confirmState: { message: string; resolve: (value: boolean) => void } | null = null;
-  let clipboard: { id: number; mode: 'copy' | 'cut' } | null = null;
   let shortcutsOpen = false;
   let settingsOpen = false;
   let settingsInitialTab: 'general' | 'database' = 'general';
@@ -58,185 +82,36 @@
   let updateDetailsOpen = false;
   let dismissedUpdateVersion: string | null = null;
   $: showUpdateToast = availableUpdate !== null && availableUpdate.version !== dismissedUpdateVersion;
-  // Set when the configured active database is unreachable at startup (e.g.
-  // an unmounted sync folder) - replaces the notes UI with an error view
-  // instead of silently falling through to an empty note list.
-  let startupError: string | null = null;
   let hotkeySetting = 'Alt+S';
-  // Tracked here (not just inside DatabaseManagerSection) so Alt+B can cycle
-  // to the next database without opening Settings first.
-  let databases: DatabaseProfile[] = [];
-  let activeDatabaseId: number | null = null;
-  let sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
-  let isResizingSidebar = false;
+  // Real default/persistence lives in SidebarResizer.svelte (bound below) -
+  // this initial value is only visible for the first frame before its
+  // onMount overwrites it with the saved width.
+  let sidebarWidth = 260;
 
   let noteText = '';
-  // Plain notes get their own undo/redo stack, independent of the browser's
-  // native textarea undo - Markdown notes already have reliable undo via
-  // Tiptap/ProseMirror's history extension, but the native undo manager for
-  // a bound <textarea> isn't dependable across platforms (WebKitGTK on
-  // Linux in particular - see the various other native-control quirks
-  // already worked around elsewhere in this file).
-  let plainUndoStack: { value: string; start: number; end: number }[] = [];
-  let plainRedoStack: { value: string; start: number; end: number }[] = [];
-  let lastPlainUndoSnapshotAt = 0;
-  const PLAIN_UNDO_COALESCE_MS = 500;
   let title = 'Untitled';
   let titleAutoDerive = true;
   let query = '';
-  // Off by default - opt-in, mirrors how other background-work features in
-  // this app (line numbers, updates) are explicit rather than automatic.
-  // Only ever meaningful with 2+ registered databases.
-  let searchAllDatabases = false;
-  // Cache of every OTHER database's notes, refreshed on toggle and after a
-  // database switch (see refreshOtherDatabaseNotes) - NOT refetched per
-  // keystroke, so search stays instant client-side filtering exactly like
-  // the single-database case, just over a merged array.
-  let otherDatabaseNotes: CrossDatabaseNote[] = [];
-  let status = 'Ready';
   let theme: FlashPadSettings['theme'] = 'dark';
   let lightPaletteId = DEFAULT_LIGHT_PALETTE_ID;
   let darkPaletteId = DEFAULT_DARK_PALETTE_ID;
   let isMarkdownActive = false;
   let isLockedActive = false;
   let showLineNumbersActive = false;
-  let textarea: HTMLTextAreaElement;
-  let gutterEl: HTMLPreElement | undefined;
   let markdownEditorRef: MarkdownEditor | undefined;
+  let plainEditorRef: PlainTextEditor | undefined;
   let treeEl: HTMLDivElement;
-  let insertButton: HTMLButtonElement;
-  let notesButton: HTMLButtonElement;
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
-  let noteInfoOpen = false;
-  let copiedField: 'created' | 'updated' | null = null;
-  let copiedFieldTimer: ReturnType<typeof setTimeout> | undefined;
   let toastMessage: string | null = null;
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
-  // ---------- persistence helpers ----------
-
-  const loadExpanded = (): Set<number> => {
-    if (typeof window === 'undefined') return new Set();
-    try {
-      const raw = window.localStorage.getItem(EXPANDED_KEY);
-      return raw ? new Set(JSON.parse(raw) as number[]) : new Set();
-    } catch {
-      return new Set();
-    }
-  };
-
-  const saveExpanded = () => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(EXPANDED_KEY, JSON.stringify([...expandedNotes]));
-    }
-  };
-
-  const loadSidebarWidth = (): number => {
-    if (typeof window === 'undefined') return DEFAULT_SIDEBAR_WIDTH;
-    const raw = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
-    if (!raw || Number.isNaN(raw)) return DEFAULT_SIDEBAR_WIDTH;
-    return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, raw));
-  };
-
-  const saveSidebarWidth = () => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
-    }
-  };
-
-  const startSidebarResize = (event: MouseEvent) => {
-    event.preventDefault();
-    isResizingSidebar = true;
-    document.body.classList.add('resizing-sidebar');
-
-    const handleMove = (moveEvent: MouseEvent) => {
-      sidebarWidth = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, moveEvent.clientX));
-    };
-
-    const handleUp = () => {
-      isResizingSidebar = false;
-      document.body.classList.remove('resizing-sidebar');
-      saveSidebarWidth();
-      window.removeEventListener('mousemove', handleMove);
-      window.removeEventListener('mouseup', handleUp);
-    };
-
-    window.addEventListener('mousemove', handleMove);
-    window.addEventListener('mouseup', handleUp);
-  };
-
-  // ---------- tree construction ----------
-
-  const buildTree = (noteList: NoteRecord[]): TreeItem[] => {
-    const nodeById = new Map<number, TreeItem>();
-    noteList.forEach((n) => nodeById.set(n.id, { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown, isLocked: n.isLocked, createdAt: n.createdAt, sortOrder: n.sortOrder }));
-
-    const roots: TreeItem[] = [];
-    noteList.forEach((n) => {
-      const node = nodeById.get(n.id)!;
-      const parent = n.parentId != null ? nodeById.get(n.parentId) : undefined;
-      if (parent) parent.children.push(node);
-      else roots.push(node);
-    });
-
-    // sortOrder is the single source of truth for tree order - it starts
-    // out equivalent to creation order (see migrate_add_sort_order_column
-    // and next_sort_order in the Rust backend) and is only changed by
-    // dragging a note to reorder or renest it.
-    const sortItems = (items: TreeItem[]) => {
-      items.sort((a, b) => a.sortOrder - b.sortOrder);
-      items.forEach((item) => sortItems(item.children));
-    };
-    sortItems(roots);
-    return roots;
-  };
-
-  const flattenVisible = (items: TreeItem[], expanded: Set<number>): { key: string; item: TreeItem }[] => {
-    const out: { key: string; item: TreeItem }[] = [];
-    const walk = (list: TreeItem[]) => {
-      for (const item of list) {
-        const key = `note:${item.id}`;
-        out.push({ key, item });
-        if (item.children.length && expanded.has(item.id)) walk(item.children);
-      }
-    };
-    walk(items);
-    return out;
-  };
-
-  const notePath = (note: NoteRecord): string => {
-    const parts: string[] = [note.title];
-    let current: NoteRecord | undefined = note;
-    while (current && current.parentId != null) {
-      current = notes.find((n) => n.id === current!.parentId);
-      if (current) parts.unshift(current.title);
-    }
-    return parts.join(' / ');
-  };
-
-  const collectDescendantNoteIds = (rootId: number): Set<number> => {
-    const ids = new Set<number>();
-    const queue = [rootId];
-    while (queue.length) {
-      const current = queue.pop()!;
-      for (const n of notes) {
-        if (n.parentId === current && !ids.has(n.id)) {
-          ids.add(n.id);
-          queue.push(n.id);
-        }
-      }
-    }
-    return ids;
-  };
-
-  $: tree = buildTree(notes);
   $: normalizedQuery = query.trim().toLowerCase();
   $: isSearching = normalizedQuery.length > 0;
   // Merges in the cached other-database notes only when the toggle is on -
   // otherDatabaseNotes already carries databaseId/databaseName (from
   // CrossDatabaseNote), which a plain NoteRecord simply doesn't have, so
   // this stays a normal instant client-side filter either way.
-  $: searchableNotes = (searchAllDatabases && databases.length > 1 ? [...notes, ...otherDatabaseNotes] : notes) as SearchableNote[];
+  $: searchableNotes = ($searchAllDatabases && $databases.length > 1 ? [...$notes, ...$otherDatabaseNotes] : $notes) as SearchableNote[];
   $: searchResults = isSearching
     ? searchableNotes
         .filter((n) => `${n.title} ${n.content}`.toLowerCase().includes(normalizedQuery))
@@ -244,95 +119,61 @@
     : [];
   $: visibleFlat = isSearching
     ? searchResults.map((n) => ({
-        key: `note:${n.id}`,
+        key: searchResultKey(n),
         item: { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown, isLocked: n.isLocked, createdAt: n.createdAt, sortOrder: n.sortOrder, databaseId: n.databaseId, databaseName: n.databaseName } as TreeItem,
       }))
-    : flattenVisible(tree, expandedNotes);
-  $: if (visibleFlat.length && !visibleFlat.some((v) => v.key === focusedKey)) {
-    focusedKey = visibleFlat[0].key;
+    : flattenVisible($tree, $expandedNotes);
+  $: if (visibleFlat.length && !visibleFlat.some((v) => v.key === $focusedKey)) {
+    focusedKey.set(visibleFlat[0].key);
   }
-  $: searchMatchIndex = isSearching ? searchResults.findIndex((n) => n.id === selectedId) : -1;
-  $: selectedNoteCreatedAt = notes.find((n) => n.id === selectedId)?.createdAt ?? null;
-  $: selectedNoteUpdatedAt = notes.find((n) => n.id === selectedId)?.updatedAt ?? null;
-  $: activeDatabaseName = databases.find((db) => db.id === activeDatabaseId)?.name ?? null;
+  $: searchMatchIndex = isSearching ? searchResults.findIndex((n) => n.id === $selectedId) : -1;
+  $: selectedNoteCreatedAt = $notes.find((n) => n.id === $selectedId)?.createdAt ?? null;
+  $: selectedNoteUpdatedAt = $notes.find((n) => n.id === $selectedId)?.updatedAt ?? null;
 
   // ---------- data loading ----------
-
-  const refreshNotes = async () => {
-    notes = await notesService.list();
-  };
-
-  const refreshAll = async () => {
-    await refreshNotes();
-    status = 'Refreshed';
-  };
 
   // Loads notes for whichever database is currently active and selects
   // something to show. Extracted out of onMount so switching databases (or
   // importing into the active one) can re-run exactly the same startup
   // sequence without a full app reload.
   const initializeNotes = async () => {
-    await refreshAll();
-    if (notes.length) {
-      selectNote(notes[0]);
+    await notesStore.refreshAll();
+    if ($notes.length) {
+      selectNote($notes[0]);
     } else {
-      await createWelcomeNote();
+      selectNote(await notesStore.createWelcomeNote(hotkeySetting));
     }
-    requestAnimationFrame(() => textarea?.focus());
+    requestAnimationFrame(() => (isMarkdownActive ? markdownEditorRef : plainEditorRef)?.focus());
   };
 
   // Resets everything scoped to the previously-active database's notes so
   // no stale ids from the old vault leak into tree-expansion, clipboard, or
   // search state after switching to a different database.
   const resetNoteScopedState = () => {
-    selectedId = null;
-    activeParentId = null;
-    expandedNotes = new Set();
-    clipboard = null;
+    notesStore.resetSelection();
     query = '';
   };
 
   // Shared by every path that can hand back a fresh AppState after
-  // touching the active connection (switching, reloading, retrying startup)
-  // - `switch_database`/`reload_database` resolve successfully even when
-  // activation itself failed (e.g. a removable drive unplugged mid-action),
-  // so `ready` must be checked explicitly rather than assumed from the
-  // absence of a thrown error.
+  // touching the active connection (switching, reloading, retrying startup).
   const applyAppState = async (state: AppState | null, unavailableMessage: string) => {
-    if (state) {
-      databases = state.databases;
-      activeDatabaseId = state.activeDatabaseId;
-    }
-    if (!state || !state.ready) {
-      startupError = state?.error ?? unavailableMessage;
-      return;
-    }
-    startupError = null;
+    if (!databaseStore.applyDatabaseState(state, unavailableMessage)) return;
     resetNoteScopedState();
     await initializeNotes();
     // Keep the cross-database cache correct relative to whichever database
     // just became active (the note just opened moves from "other" to
     // "active" and should stop showing a badge) - only worth the round
     // trip when the toggle is actually on.
-    if (searchAllDatabases) await refreshOtherDatabaseNotes();
-  };
-
-  const refreshOtherDatabaseNotes = async () => {
-    otherDatabaseNotes = await databaseService.listNotesFromOtherDatabases();
-  };
-
-  const toggleSearchAllDatabases = () => {
-    searchAllDatabases = !searchAllDatabases;
-    if (searchAllDatabases) void refreshOtherDatabaseNotes();
+    if ($searchAllDatabases) await databaseStore.refreshOtherDatabaseNotes();
   };
 
   // Cycles to the next database in the list (wrapping around) - lets Alt+B
   // switch databases without opening Settings first. A no-op with 0 or 1
   // databases.
   const cycleDatabase = () => {
-    if (databases.length < 2) return;
-    const currentIndex = databases.findIndex((db) => db.id === activeDatabaseId);
-    const next = databases[(currentIndex + 1) % databases.length];
+    if ($databases.length < 2) return;
+    const currentIndex = $databases.findIndex((db) => db.id === $activeDatabaseId);
+    const next = $databases[(currentIndex + 1) % $databases.length];
     void switchToDatabase(next.id);
   };
 
@@ -360,19 +201,18 @@
   };
 
   const selectNote = (note: NoteRecord, focusEditor = true) => {
-    selectedId = note.id;
-    activeParentId = note.parentId;
+    selectedId.set(note.id);
+    activeParentId.set(note.parentId);
     title = note.title;
     noteText = note.content;
     isMarkdownActive = note.isMarkdown;
     isLockedActive = note.isLocked;
     showLineNumbersActive = note.showLineNumbers;
     titleAutoDerive = note.title === 'Untitled' || note.title.trim() === '';
-    // Undo history is per-note - don't let it carry over to whatever note
-    // is opened next.
-    plainUndoStack = [];
-    plainRedoStack = [];
-    if (focusEditor) requestAnimationFrame(() => textarea?.focus());
+    // Plain-text undo history is per-note - PlainTextEditor resets its own
+    // stacks internally when its noteId prop changes, so there's nothing to
+    // reset here.
+    if (focusEditor) requestAnimationFrame(() => (isMarkdownActive ? markdownEditorRef : plainEditorRef)?.focus());
   };
 
   // focusEditor defaults to false here: opening a note from the sidebar (click,
@@ -380,7 +220,7 @@
   // navigation keeps working. Pass true for deliberate "open to edit" actions
   // (Enter, context menu "Open").
   const openNote = async (id: number, focusEditor = false) => {
-    const note = notes.find((n) => n.id === id);
+    const note = $notes.find((n) => n.id === id);
     if (note) selectNote(note, focusEditor);
   };
 
@@ -393,7 +233,7 @@
   // the search box - that's the right default for Alt+B/manual switches,
   // just not for "I clicked a search result".
   const openSearchResult = async (id: number, databaseId?: number) => {
-    if (databaseId != null && databaseId !== activeDatabaseId) {
+    if (databaseId != null && databaseId !== $activeDatabaseId) {
       // switchToDatabase -> applyAppState already refreshes
       // otherDatabaseNotes (when the toggle is on) as part of its normal
       // post-switch sequence - no need to do it again here.
@@ -411,18 +251,18 @@
   const toggleMenuFocus = () => {
     const active = document.activeElement;
     if (treeEl && active && treeEl.contains(active)) {
-      if (selectedId == null) return;
+      if ($selectedId == null) return;
       if (isMarkdownActive) {
         markdownEditorRef?.focus();
       } else {
-        textarea?.focus();
+        plainEditorRef?.focus();
       }
       return;
     }
     // Focus the row for whichever note is currently open (falls back to
     // the first visible row automatically - see the visibleFlat/focusedKey
     // sync above).
-    if (selectedId != null) focusedKey = `note:${selectedId}`;
+    if ($selectedId != null) focusedKey.set(`note:${$selectedId}`);
     treeEl?.focus();
   };
 
@@ -432,25 +272,25 @@
       ? 0
       : (searchMatchIndex + direction + searchResults.length) % searchResults.length;
     const match = searchResults[nextIndex];
-    focusedKey = `note:${match.id}`;
+    focusedKey.set(searchResultKey(match));
     void openSearchResult(match.id, match.databaseId);
   };
 
   const saveActiveNote = async () => {
-    if (!selectedId) return;
+    if (!$selectedId) return;
     // Locked notes only ever reach here via a checkbox toggle (see
     // onReadOnlyChecked in MarkdownEditor.svelte) - route through the
     // narrow exception that persists just the content, rather than the
     // general save, which rejects content changes on a locked note.
     const saved = isLockedActive
-      ? await notesService.saveChecklistToggle(selectedId, noteText)
-      : await notesService.save({ id: selectedId, title, content: noteText });
-    notes = notes.map((note) => (note.id === saved.id ? saved : note));
-    status = 'Saved';
+      ? await notesService.saveChecklistToggle($selectedId, noteText)
+      : await notesService.save({ id: $selectedId, title, content: noteText });
+    notesStore.applyUpdatedNote(saved);
+    status.set('Saved');
   };
 
   const scheduleSave = () => {
-    status = 'Saving…';
+    status.set('Saving…');
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       void saveActiveNote();
@@ -480,6 +320,11 @@
     handleEditorInput();
   };
 
+  const handlePlainEditorUpdate = (text: string) => {
+    noteText = text;
+    handleEditorInput();
+  };
+
   const handleTitleInput = () => {
     if (isLockedActive) return;
     titleAutoDerive = false;
@@ -487,7 +332,7 @@
   };
 
   const toggleMarkdown = () => {
-    if (selectedId == null || isLockedActive) return;
+    if ($selectedId == null || isLockedActive) return;
     const next = !isMarkdownActive;
     isMarkdownActive = next;
     // Switching modes swaps the textarea/MarkdownEditor DOM out from under
@@ -497,11 +342,11 @@
       if (next) {
         markdownEditorRef?.focus();
       } else {
-        textarea?.focus();
+        plainEditorRef?.focus();
       }
     });
-    void notesService.save({ id: selectedId, isMarkdown: next }).then((saved) => {
-      notes = notes.map((note) => (note.id === saved.id ? saved : note));
+    void notesService.save({ id: $selectedId, isMarkdown: next }).then((saved) => {
+      notesStore.applyUpdatedNote(saved);
     });
   };
 
@@ -509,121 +354,12 @@
     if (isLockedActive) return;
     if (isMarkdownActive) {
       markdownEditorRef?.insertAtCursor(text);
-      return;
+    } else {
+      plainEditorRef?.insertAtCursor(text);
     }
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    pushPlainUndoSnapshot(true);
-    noteText = `${noteText.slice(0, start)}${text}${noteText.slice(end)}`;
-    requestAnimationFrame(() => {
-      const cursor = start + text.length;
-      textarea.focus();
-      textarea.setSelectionRange(cursor, cursor);
-    });
-    handleEditorInput();
   };
 
   const insertNewline = () => insertAtCursor('-=-=-=-=-=-=-=-=-= =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-\n');
-
-  // Records a checkpoint to undo back to. `force` is for discrete
-  // programmatic edits (paste, insert-timestamp/-divider/-dateline) that
-  // should always be their own undo step; native typing goes through the
-  // keydown handler below without force, so a burst of consecutive
-  // keystrokes within PLAIN_UNDO_COALESCE_MS collapses into a single step
-  // (matching how native undo normally groups continuous typing) instead of
-  // undoing one character at a time. Snapshotting is driven by keydown
-  // (fires before the keystroke's edit is applied) rather than the newer
-  // beforeinput event, since beforeinput support on plain <textarea>
-  // elements (as opposed to contenteditable) has historically been
-  // inconsistent on WebKitGTK.
-  const pushPlainUndoSnapshot = (force = false) => {
-    const now = Date.now();
-    if (!force && plainUndoStack.length && now - lastPlainUndoSnapshotAt < PLAIN_UNDO_COALESCE_MS) {
-      lastPlainUndoSnapshotAt = now;
-      return;
-    }
-    plainUndoStack = [
-      ...plainUndoStack.slice(-199),
-      { value: noteText, start: textarea?.selectionStart ?? noteText.length, end: textarea?.selectionEnd ?? noteText.length },
-    ];
-    plainRedoStack = [];
-    lastPlainUndoSnapshotAt = now;
-  };
-
-  const undoPlainText = () => {
-    if (!plainUndoStack.length) return;
-    const current = { value: noteText, start: textarea.selectionStart, end: textarea.selectionEnd };
-    const prev = plainUndoStack[plainUndoStack.length - 1];
-    plainUndoStack = plainUndoStack.slice(0, -1);
-    plainRedoStack = [...plainRedoStack, current];
-    noteText = prev.value;
-    requestAnimationFrame(() => {
-      textarea.focus();
-      textarea.setSelectionRange(prev.start, prev.end);
-    });
-    handleEditorInput();
-  };
-
-  const redoPlainText = () => {
-    if (!plainRedoStack.length) return;
-    const current = { value: noteText, start: textarea.selectionStart, end: textarea.selectionEnd };
-    const next = plainRedoStack[plainRedoStack.length - 1];
-    plainRedoStack = plainRedoStack.slice(0, -1);
-    plainUndoStack = [...plainUndoStack, current];
-    noteText = next.value;
-    requestAnimationFrame(() => {
-      textarea.focus();
-      textarea.setSelectionRange(next.start, next.end);
-    });
-    handleEditorInput();
-  };
-
-  // Keys that don't modify the field's content - no undo checkpoint needed
-  // for these (also avoids fighting the tree/search's own arrow-key
-  // navigation shortcuts).
-  const NON_EDITING_KEYS = new Set([
-    'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown',
-    'Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Escape',
-    'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
-  ]);
-
-  const handlePlainTextKeydown = (event: KeyboardEvent) => {
-    if (isLockedActive) return;
-    if (event.ctrlKey || event.metaKey) {
-      const key = event.key.toLowerCase();
-      if (key === 'z' && !event.shiftKey) {
-        event.preventDefault();
-        undoPlainText();
-      } else if ((key === 'z' && event.shiftKey) || key === 'y') {
-        event.preventDefault();
-        redoPlainText();
-      }
-      return;
-    }
-    if (!NON_EDITING_KEYS.has(event.key)) pushPlainUndoSnapshot(false);
-  };
-
-  // Plain-text notes should never pick up rich formatting from the
-  // clipboard (bold/colors/fonts from a pasted webpage, Word doc, etc.) -
-  // force the text/plain flavor regardless of how Ctrl+V or the OS's own
-  // "Paste" action populated the clipboard. Only wired up on the plain
-  // <textarea> - Markdown notes keep the editor's normal paste handling,
-  // which is expected to preserve formatting.
-  //
-  // Even the text/plain flavor isn't clean, though: when copying from a
-  // rendered webpage, browsers generate that plain-text fallback from the
-  // page's DOM structure, which bakes in each source element's indentation
-  // as literal leading spaces/tabs on every line - strip those per line so
-  // pasted lines start flush left, matching what plain notes expect.
-  const handlePlainTextPaste = (event: ClipboardEvent) => {
-    event.preventDefault();
-    const raw = event.clipboardData?.getData('text/plain') ?? '';
-    const text = raw
-      .split('\n')
-      .map((line) => line.replace(/^[ \t]+/, ''))
-      .join('\n');
-    insertAtCursor(text);
-  };
 
   const formatLocalTimestamp = (date: Date): string => {
     const pad = (n: number) => String(n).padStart(2, '0');
@@ -648,228 +384,38 @@
   // ---------- creation ----------
 
   const createNoteIn = async (parentId: number | null) => {
-    const created = await notesService.create({ title: 'Untitled', content: '', parentId });
-    notes = [created, ...notes];
-    if (parentId != null && !expandedNotes.has(parentId)) {
-      expandedNotes = new Set(expandedNotes).add(parentId);
-      saveExpanded();
-    }
-    selectNote(created);
-    focusedKey = `note:${created.id}`;
-    status = 'New note';
+    selectNote(await notesStore.createNoteIn(parentId));
   };
 
-  // Imports a FlashNote export (a different, unrelated app): folders become
-  // subnotes, .txt files become notes, and a "<folder>.txt" sibling next to
-  // a folder becomes that subnote's own content. The picked folder's own
-  // subfolders/files land as new top-level notes directly - no extra
-  // wrapper note for the picked folder itself.
-  //
   // Triggered from Settings, which shows its own inline "Importing…"/result
   // state (same pattern as the "Check for updates" button) rather than this
   // reporting through the main window's status bar - errors are left to
   // propagate so Settings can display them. Returns null if the user
   // cancelled the folder picker, distinct from a real failure.
   const importFromFolder = async (): Promise<{ importedCount: number } | null> => {
-    const picked = await openDialog({ directory: true, title: 'Select a FlashNote export folder' });
-    if (typeof picked !== 'string') return null;
-
-    const summary = await notesService.importFlashNoteFolder(picked);
-    await refreshNotes();
-    const imported = summary.firstNoteId != null ? notes.find((n) => n.id === summary.firstNoteId) : undefined;
-    if (imported) {
-      selectNote(imported);
-      focusedKey = `note:${imported.id}`;
-    }
-    return { importedCount: summary.importedCount };
-  };
-
-  // Only used once, when the database is empty (first launch / fresh
-  // install) - gives a new user something to look at instead of a blank
-  // untitled note, and doubles as a quick reference for the core shortcuts.
-  const createWelcomeNote = async () => {
-    const content = [
-      '# Welcome to FlashPad',
-      '',
-      `Press **${hotkeySetting}** anywhere to open FlashPad instantly.`,
-      'Press **Esc** to hide it - it keeps running in the tray.',
-      '',
-      '## Notes & subnotes',
-      '',
-      'Right-click a note (or the sidebar background) to create a note, rename, duplicate, move, or delete. Any note can hold subnotes - once it has one, it shows a folder icon: click it to open its own content, click the little arrow to expand or collapse its subnotes.',
-      '',
-      '## Markdown',
-      '',
-      'Toggle **Markdown** at the bottom of a note to format as you type - headings, **bold**, lists, and more. Use the Markdown guide button (top right) for the full syntax. Links open in your default browser - Ctrl+Click (or a plain click on a locked note), right-click for more options, or Alt+O to open the link under the caret.',
-      '',
-      '## Locking notes',
-      '',
-      "Right-click a note's text (or press **Alt+L**) to lock it - a locked note can't be edited until you unlock it again.",
-      '',
-      '## Search',
-      '',
-      'Use the search box at the bottom to find notes, with prev/next buttons (or **Enter** / **Shift+Enter**) to step through matches.',
-      '',
-      '## Shortcuts',
-      '',
-      '- **Alt+N** - Create a new note',
-      '- **Alt+L** - Lock / unlock the current note',
-      '- **Alt+D** - Delete the current note (and its subnotes)',
-      '- **Alt+M** - Toggle Markdown view',
-      '- **Alt+R** - Toggle line numbers (plain text notes)',
-      '- **Alt+O** - Open the link under the caret (Markdown view)',
-      '- **Alt+B** - Switch to the next database',
-      '- **Alt+T** - Toggle focus between the editor and the notes menu',
-      '- **Alt+1** - Insert a divider',
-      '- **Alt+2** - Insert a timestamp',
-      '- **Alt+3** - Insert a dateline',
-      '',
-      '## Settings',
-      '',
-      'The gear icon in Settings lets you launch FlashPad at login and change the hotkey above to whatever you like.',
-      '',
-      '---',
-      '',
-      '*Start typing to replace this note.*',
-    ].join('\n');
-
-    const created = await notesService.create({ title: 'Welcome to FlashPad', content, parentId: null, isMarkdown: true });
-    notes = [created, ...notes];
-    selectNote(created);
-    focusedKey = `note:${created.id}`;
+    const result = await notesStore.importFromFolder();
+    if (!result) return null;
+    if (result.imported) selectNote(result.imported);
+    return { importedCount: result.importedCount };
   };
 
   // ---------- rename / move / delete / duplicate ----------
 
   const commitRename = async (key: string, value: string) => {
-    renamingKey = null;
-    const trimmed = value.trim();
-    if (!trimmed) return;
-
-    const id = Number(key.slice('note:'.length));
-    if (notes.find((n) => n.id === id)?.isLocked) return;
-    const updated = await notesService.save({ id, title: trimmed });
-    notes = notes.map((n) => (n.id === id ? updated : n));
-    if (selectedId === id) {
-      title = trimmed;
+    const result = await notesStore.commitRename(key, value);
+    if (result && $selectedId === result.id) {
+      title = result.updated.title;
       titleAutoDerive = false;
     }
   };
 
-  const buildMoveTargetItems = (onPick: (parentId: number | null) => void, excludeId?: number): ContextMenuItem[] => {
-    const descendantIds = excludeId != null ? collectDescendantNoteIds(excludeId) : new Set<number>();
-    const eligible = notes
-      .filter((n) => n.id !== excludeId && !descendantIds.has(n.id))
-      .sort((a, b) => notePath(a).localeCompare(notePath(b), undefined, { sensitivity: 'base' }));
-    return [
-      { label: 'Notes (root)', action: () => onPick(null) },
-      ...eligible.map((n) => ({ label: notePath(n), action: () => onPick(n.id) })),
-    ];
-  };
-
-  const moveNoteTo = async (id: number, parentId: number | null): Promise<boolean> => {
-    try {
-      const updated = await notesService.move(id, parentId);
-      notes = notes.map((n) => (n.id === id ? updated : n));
-      if (selectedId === id) activeParentId = parentId;
-      status = 'Moved';
-      return true;
-    } catch (err) {
-      status = err instanceof Error ? err.message : 'Move failed';
-      return false;
-    }
-  };
-
-  // ---------- drag-and-drop tree reordering ----------
-
-  let draggingId: number | null = null;
-  $: dropDisabledIds = draggingId != null ? new Set([draggingId, ...collectDescendantNoteIds(draggingId)]) : new Set<number>();
-
-  const onDragStartRow = (id: number) => (draggingId = id);
-  const onDragEndRow = () => (draggingId = null);
-  const onDropRow = (draggedId: number, targetId: number, zone: 'before' | 'inside' | 'after') => void handleTreeDrop(draggedId, targetId, zone);
-
-  const handleTreeDrop = async (draggedId: number, targetId: number, zone: 'before' | 'inside' | 'after') => {
-    if (draggedId === targetId || dropDisabledIds.has(targetId)) return;
-    const target = notes.find((n) => n.id === targetId);
-    if (!target) return;
-
-    let parentId: number | null;
-    let beforeId: number | null;
-    if (zone === 'inside') {
-      parentId = target.id;
-      beforeId = null;
-    } else {
-      parentId = target.parentId;
-      const siblings = notes
-        .filter((n) => n.parentId === target.parentId && n.id !== draggedId)
-        .sort((a, b) => a.sortOrder - b.sortOrder);
-      const targetIndex = siblings.findIndex((n) => n.id === targetId);
-      beforeId = zone === 'before' ? targetId : (siblings[targetIndex + 1]?.id ?? null);
-    }
-
-    try {
-      await notesService.reorder(draggedId, parentId, beforeId);
-      await refreshNotes();
-      status = 'Reordered';
-    } catch (err) {
-      status = err instanceof Error ? err.message : 'Reorder failed';
-    }
-  };
-
   const duplicateNote = async (id: number) => {
-    const created = await notesService.duplicate(id);
-    notes = [created, ...notes];
-    selectNote(created);
-    status = 'Duplicated';
+    selectNote(await notesStore.duplicateNote(id));
   };
 
   const toggleLock = async (id: number) => {
-    const note = notes.find((n) => n.id === id);
-    if (!note) return;
-    const next = !note.isLocked;
-    const saved = await notesService.save({ id, isLocked: next });
-    notes = notes.map((n) => (n.id === saved.id ? saved : n));
-    if (selectedId === id) isLockedActive = saved.isLocked;
-    status = next ? 'Locked' : 'Unlocked';
-  };
-
-  const copyNote = (id: number) => {
-    clipboard = { id, mode: 'copy' };
-    status = 'Copied';
-  };
-
-  const cutNote = (id: number) => {
-    clipboard = { id, mode: 'cut' };
-    status = 'Cut';
-  };
-
-  const toggleNoteInfo = () => {
-    noteInfoOpen = !noteInfoOpen;
-  };
-
-  const handleNoteInfoOutsideClick = (event: MouseEvent) => {
-    const target = event.target as HTMLElement;
-    if (!target.closest('.note-info')) {
-      noteInfoOpen = false;
-    }
-  };
-
-  // Writes to the real OS clipboard (via tauri-plugin-clipboard-manager),
-  // unlike copyNote/cutNote above which are FlashPad's own internal
-  // note-move clipboard - this is the only place the two ever overlap.
-  // Briefly swaps the clicked field's copy icon for a checkmark instead of
-  // routing through the footer status text, since the popover is already
-  // showing the value right there - no need to look away to confirm it copied.
-  const copyNoteInfoField = async (field: 'created' | 'updated', value: string) => {
-    try {
-      await writeClipboardText(value.replace('T', ' '));
-      copiedField = field;
-      if (copiedFieldTimer) clearTimeout(copiedFieldTimer);
-      copiedFieldTimer = setTimeout(() => (copiedField = null), 1200);
-    } catch (err) {
-      status = err instanceof Error ? err.message : 'Failed to copy';
-    }
+    const saved = await notesStore.toggleLock(id);
+    if (saved && $selectedId === id) isLockedActive = saved.isLocked;
   };
 
   const showToast = (message: string) => {
@@ -895,57 +441,23 @@
     }
   };
 
-  const pasteNote = async (targetParentId: number | null) => {
-    if (!clipboard) return;
-    const { id, mode } = clipboard;
-    if (mode === 'copy') {
-      const created = await notesService.duplicate(id);
-      notes = [created, ...notes];
-      await moveNoteTo(created.id, targetParentId);
-    } else {
-      const moved = await moveNoteTo(id, targetParentId);
-      if (moved) clipboard = null;
-    }
-  };
-
   const deleteNoteById = async (id: number) => {
-    const descendantIds = collectDescendantNoteIds(id);
-    const removedIds = new Set([id, ...descendantIds]);
+    const descendantIds = notesStore.collectDescendantNoteIds(id);
     const message =
       descendantIds.size > 0
         ? `Delete this note and ${descendantIds.size} note${descendantIds.size === 1 ? '' : 's'} inside it? This cannot be undone.`
         : 'Delete this note? This cannot be undone.';
     if (!(await confirmDialog(message))) return;
 
-    await notesService.delete(id);
-    notes = notes.filter((n) => !removedIds.has(n.id));
-    if (selectedId != null && removedIds.has(selectedId)) {
-      selectedId = null;
-      if (notes.length) {
-        selectNote(notes[0]);
+    const result = await notesStore.deleteNote(id);
+    if (result.removedSelected) {
+      if (result.nextNote) {
+        selectNote(result.nextNote);
       } else {
         title = 'Untitled';
         noteText = '';
-        activeParentId = null;
       }
     }
-    if (activeParentId != null && removedIds.has(activeParentId)) {
-      activeParentId = null;
-    }
-    status = 'Deleted';
-  };
-
-  // ---------- tree state ----------
-
-  // Deliberately doesn't touch activeParentId: expanding/collapsing a note to
-  // browse its children shouldn't change where "New note" lands - that's
-  // driven only by whichever note you actually have open (see selectNote).
-  const toggleExpand = (id: number) => {
-    const next = new Set(expandedNotes);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    expandedNotes = next;
-    saveExpanded();
   };
 
   // ---------- context menus ----------
@@ -965,20 +477,17 @@
       x: event.clientX,
       y: event.clientY,
       items: [
-        { label: 'New note', action: () => void createNoteIn(activeParentId) },
-        { label: 'Paste', disabled: clipboard == null, action: () => void pasteNote(activeParentId) },
+        { label: 'New note', action: () => void createNoteIn($activeParentId) },
+        { label: 'Paste', disabled: $clipboard == null, action: () => void notesStore.pasteNote($activeParentId) },
         { label: '', separator: true },
-        { label: 'Refresh', action: () => void refreshAll() },
-        { label: 'Collapse all', action: () => {
-            expandedNotes = new Set();
-            saveExpanded();
-          } },
+        { label: 'Refresh', action: () => void notesStore.refreshAll() },
+        { label: 'Collapse all', action: () => notesStore.collapseAll() },
       ],
     };
   };
 
   const openNoteMenu = (event: MouseEvent, noteId: number) => {
-    const note = notes.find((n) => n.id === noteId);
+    const note = $notes.find((n) => n.id === noteId);
     const locked = note?.isLocked ?? false;
     contextMenu = {
       x: event.clientX,
@@ -986,9 +495,9 @@
       items: [
         { label: 'Open', action: () => void openNote(noteId, true) },
         { label: 'New subnote', action: () => void createNoteIn(noteId) },
-        { label: 'Rename', disabled: locked, action: () => (renamingKey = `note:${noteId}`) },
+        { label: 'Rename', disabled: locked, action: () => renamingKey.set(`note:${noteId}`) },
         { label: 'Duplicate', action: () => void duplicateNote(noteId) },
-        { label: 'Move to…', submenu: buildMoveTargetItems((target) => void moveNoteTo(noteId, target), noteId) },
+        { label: 'Move to…', submenu: notesStore.buildMoveTargetItems((target) => void notesStore.moveNoteTo(noteId, target), noteId) },
         { label: '', separator: true },
         { label: locked ? 'Unlock' : 'Lock', action: () => void toggleLock(noteId) },
         { label: '', separator: true },
@@ -998,8 +507,8 @@
   };
 
   const openEditorMenu = (event: MouseEvent) => {
-    if (selectedId == null) return;
-    const id = selectedId;
+    if ($selectedId == null) return;
+    const id = $selectedId;
     // Links only exist in Markdown mode - closest('a[href]') naturally
     // finds nothing in the plain textarea, but the isMarkdownActive check
     // is kept as the source of truth rather than relying on that.
@@ -1017,9 +526,9 @@
               { label: '', separator: true },
             ]
           : []),
-        { label: 'Copy', action: () => copyNote(id) },
-        { label: 'Cut', action: () => cutNote(id) },
-        { label: 'Paste', disabled: clipboard == null, action: () => void pasteNote(id) },
+        { label: 'Copy', action: () => notesStore.copyNote(id) },
+        { label: 'Cut', action: () => notesStore.cutNote(id) },
+        { label: 'Paste', disabled: $clipboard == null, action: () => void notesStore.pasteNote(id) },
         { label: '', separator: true },
         { label: isLockedActive ? 'Unlock' : 'Lock', action: () => void toggleLock(id) },
       ],
@@ -1027,52 +536,52 @@
   };
 
   $: treeNodeProps = {
-    expandedNotes,
-    selectedNoteId: selectedId,
-    focusedKey,
-    renamingKey,
-    cutId: clipboard?.mode === 'cut' ? clipboard.id : null,
-    draggingId,
-    dropDisabledIds,
-    onToggleExpand: toggleExpand,
+    expandedNotes: $expandedNotes,
+    selectedNoteId: $selectedId,
+    focusedKey: $focusedKey,
+    renamingKey: $renamingKey,
+    cutId: $clipboard?.mode === 'cut' ? $clipboard.id : null,
+    draggingId: $draggingId,
+    dropDisabledIds: $dropDisabledIds,
+    onToggleExpand: notesStore.toggleExpand,
     onSelectNote: (id: number, databaseId?: number) => void openSearchResult(id, databaseId),
     onNoteContextMenu: openNoteMenu,
     onFocusItem: (key: string) => {
-      focusedKey = key;
+      focusedKey.set(key);
       treeEl?.focus();
     },
     onRenameCommit: commitRename,
-    onRenameCancel: () => (renamingKey = null),
-    onDragStartRow,
-    onDragEndRow,
-    onDropRow,
+    onRenameCancel: () => renamingKey.set(null),
+    onDragStartRow: notesStore.onDragStartRow,
+    onDragEndRow: notesStore.onDragEndRow,
+    onDropRow: notesStore.onDropRow,
   };
 
   // ---------- keyboard navigation ----------
 
   const handleTreeKeydown = (event: KeyboardEvent) => {
     if (!visibleFlat.length) return;
-    const currentIndex = visibleFlat.findIndex((v) => v.key === focusedKey);
+    const currentIndex = visibleFlat.findIndex((v) => v.key === $focusedKey);
 
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       const next = visibleFlat[Math.min(currentIndex + 1, visibleFlat.length - 1)];
-      focusedKey = next?.key ?? visibleFlat[0].key;
+      focusedKey.set(next?.key ?? visibleFlat[0].key);
     } else if (event.key === 'ArrowUp') {
       event.preventDefault();
       const prevIndex = currentIndex <= 0 ? 0 : currentIndex - 1;
-      focusedKey = visibleFlat[prevIndex]?.key ?? visibleFlat[0].key;
+      focusedKey.set(visibleFlat[prevIndex]?.key ?? visibleFlat[0].key);
     } else if (event.key === 'ArrowRight' && !isSearching) {
       const entry = visibleFlat[currentIndex];
-      if (entry?.item.children.length && !expandedNotes.has(entry.item.id)) {
+      if (entry?.item.children.length && !$expandedNotes.has(entry.item.id)) {
         event.preventDefault();
-        toggleExpand(entry.item.id);
+        notesStore.toggleExpand(entry.item.id);
       }
     } else if (event.key === 'ArrowLeft' && !isSearching) {
       const entry = visibleFlat[currentIndex];
-      if (entry?.item.children.length && expandedNotes.has(entry.item.id)) {
+      if (entry?.item.children.length && $expandedNotes.has(entry.item.id)) {
         event.preventDefault();
-        toggleExpand(entry.item.id);
+        notesStore.toggleExpand(entry.item.id);
       }
     } else if (event.key === 'Enter') {
       event.preventDefault();
@@ -1084,7 +593,7 @@
       if (entry) {
         void openNote(entry.item.id, true);
         if (entry.item.children.length) {
-          toggleExpand(entry.item.id);
+          notesStore.toggleExpand(entry.item.id);
         }
       }
     }
@@ -1122,37 +631,8 @@
   // (and update_note's lock guard only rejects title/content changes
   // anyway, so this always goes through even on a locked note).
   const toggleLineNumbers = async (id: number) => {
-    const note = notes.find((n) => n.id === id);
-    if (!note) return;
-    const next = !note.showLineNumbers;
-    const saved = await notesService.save({ id, showLineNumbers: next });
-    notes = notes.map((n) => (n.id === saved.id ? saved : n));
-    if (selectedId === id) showLineNumbersActive = saved.showLineNumbers;
-    status = next ? 'Line numbers on' : 'Line numbers off';
-  };
-
-  // Line numbers are per logical line (split on \n), not per wrapped visual
-  // row - matching how editors typically define "line numbers" (e.g. the
-  // line a cursor position refers to), and avoiding the cost/fragility of
-  // measuring where a plain <textarea> actually wraps text, which would
-  // need to be recomputed on every resize as well as every edit. The plain
-  // editor switches to no-wrap/horizontal-scroll while this is on (see the
-  // .no-wrap class below) specifically so each logical line always renders
-  // as exactly one row, keeping numbers correctly aligned with their line -
-  // without that, a wrapped line would silently throw off every number
-  // beneath it.
-  $: plainLineNumberText = showLineNumbersActive ? Array.from({ length: noteText.split('\n').length }, (_, i) => i + 1).join('\n') : '';
-
-  // Keeps the gutter's vertical position matched to the textarea's own
-  // scroll - re-runs whenever the gutter is (re)mounted too, so toggling
-  // the setting on while already scrolled down doesn't leave the gutter
-  // stuck at the top until the next scroll event.
-  $: if (gutterEl && textarea) {
-    gutterEl.scrollTop = textarea.scrollTop;
-  }
-
-  const syncGutterScroll = () => {
-    if (gutterEl && textarea) gutterEl.scrollTop = textarea.scrollTop;
+    const saved = await notesStore.toggleLineNumbers(id);
+    if (saved && $selectedId === id) showLineNumbersActive = saved.showLineNumbers;
   };
 
   // Checked once on startup only (called from onMount, never polled/re-run
@@ -1188,9 +668,7 @@
     return update;
   };
 
-  const openInsertMenu = () => {
-    if (!insertButton) return;
-    const rect = insertButton.getBoundingClientRect();
+  const openInsertMenu = (rect: DOMRect) => {
     contextMenu = {
       x: rect.left,
       y: rect.bottom + 4,
@@ -1202,24 +680,22 @@
     };
   };
 
-  const openNotesMenu = () => {
-    if (!notesButton) return;
-    const rect = notesButton.getBoundingClientRect();
+  const openNotesMenu = (rect: DOMRect) => {
     contextMenu = {
       x: rect.left,
       y: rect.bottom + 4,
       items: [
-        { label: 'New note', action: () => void createNoteIn(activeParentId) },
-        { label: 'New subnote', disabled: selectedId == null, action: () => {
-            if (selectedId != null) void createNoteIn(selectedId);
+        { label: 'New note', action: () => void createNoteIn($activeParentId) },
+        { label: 'New subnote', disabled: $selectedId == null, action: () => {
+            if ($selectedId != null) void createNoteIn($selectedId);
           } },
         { label: '', separator: true },
-        { label: isLockedActive ? 'Unlock' : 'Lock', disabled: selectedId == null, action: () => {
-            if (selectedId != null) void toggleLock(selectedId);
+        { label: isLockedActive ? 'Unlock' : 'Lock', disabled: $selectedId == null, action: () => {
+            if ($selectedId != null) void toggleLock($selectedId);
           } },
         { label: '', separator: true },
         { label: 'Delete', danger: true, action: () => {
-            if (selectedId != null) void deleteNoteById(selectedId);
+            if ($selectedId != null) void deleteNoteById($selectedId);
           } },
       ],
     };
@@ -1243,17 +719,17 @@
 
     if (event.altKey && event.key.toLowerCase() === 'n') {
       event.preventDefault();
-      void createNoteIn(activeParentId);
+      void createNoteIn($activeParentId);
     }
 
     if (event.altKey && event.key.toLowerCase() === 'l') {
       event.preventDefault();
-      if (selectedId != null) void toggleLock(selectedId);
+      if ($selectedId != null) void toggleLock($selectedId);
     }
 
     if (event.altKey && event.key.toLowerCase() === 'd') {
       event.preventDefault();
-      if (selectedId != null) void deleteNoteById(selectedId);
+      if ($selectedId != null) void deleteNoteById($selectedId);
     }
 
     if (event.altKey && event.key.toLowerCase() === 'm') {
@@ -1281,21 +757,19 @@
 
     if (event.altKey && event.key.toLowerCase() === 'r') {
       event.preventDefault();
-      if (selectedId != null) void toggleLineNumbers(selectedId);
+      if ($selectedId != null) void toggleLineNumbers($selectedId);
     }
 
     if (event.key === 'Escape') {
       if (contextMenu || shortcutsOpen || settingsOpen || markdownHelpOpen || confirmState || updateDetailsOpen) return;
       event.preventDefault();
       void invoke('hide_window').catch(() => {
-        status = 'Window hidden';
+        status.set('Window hidden');
       });
     }
   };
 
   onMount(async () => {
-    expandedNotes = loadExpanded();
-    sidebarWidth = loadSidebarWidth();
     try {
       // Loaded and applied ahead of databaseService.init() below,
       // deliberately in its own try/catch: the visible theme shouldn't
@@ -1315,19 +789,26 @@
       await databaseService.init();
       hotkeySetting = await hotkeyService.get();
 
+      // appState is only ever null outside Tauri (the browser-preview
+      // fallback, which has no database concept at all) - deliberately NOT
+      // routed through applyDatabaseState, which would treat null as an
+      // unreachable-database failure. Every other real caller
+      // (switchToDatabase, retryStartup, handleDatabaseReloaded) already
+      // goes through applyAppState/applyDatabaseState instead, where a null
+      // state is a genuine failure.
       const appState = await databaseService.getAppState();
       if (appState) {
-        databases = appState.databases;
-        activeDatabaseId = appState.activeDatabaseId;
+        databases.set(appState.databases);
+        activeDatabaseId.set(appState.activeDatabaseId);
       }
       if (appState && !appState.ready) {
-        startupError = appState.error ?? 'The configured database is unavailable.';
+        startupError.set(appState.error ?? 'The configured database is unavailable.');
       } else {
         await initializeNotes();
       }
     } catch (err) {
       console.error('FlashPad failed to initialize', err);
-      status = err instanceof Error ? err.message : 'Startup error';
+      status.set(err instanceof Error ? err.message : 'Startup error');
     } finally {
       // Window starts invisible (tauri.conf.json) specifically so nothing
       // shows before this point - the double rAF waits for the browser to
@@ -1341,10 +822,8 @@
     void checkForAppUpdate();
 
     window.addEventListener('keydown', handleKeydown);
-    window.addEventListener('mousedown', handleNoteInfoOutsideClick);
     return () => {
       window.removeEventListener('keydown', handleKeydown);
-      window.removeEventListener('mousedown', handleNoteInfoOutsideClick);
     };
   });
 </script>
@@ -1353,13 +832,13 @@
   <title>FlashPad</title>
 </svelte:head>
 
-{#if startupError}
+{#if $startupError}
   <div class="startup-error-shell">
     <ResizeHandles />
     <TitleBar />
     <div class="startup-error-body">
       <h2>FlashPad can't reach your database</h2>
-      <p>{startupError}</p>
+      <p>{$startupError}</p>
       <div class="startup-error-actions">
         <button class="btn" on:click={() => void retryStartup()}>Retry</button>
         <button class="btn primary" on:click={() => (settingsOpen = true)}>Open Settings</button>
@@ -1370,57 +849,14 @@
 <div class="app-shell">
   <ResizeHandles />
   <TitleBar />
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="action-toolbar" on:contextmenu|preventDefault>
-    <button class="toolbar-btn" bind:this={notesButton} on:click={openNotesMenu} aria-label="Notes">
-      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M4 1.5h5.17a1 1 0 0 1 .7.3l2.83 2.83a1 1 0 0 1 .3.7V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.5a1 1 0 0 1 1-1Z" />
-      </svg>
-      <span>Notes</span>
-      <svg class="caret" width="7" height="7" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M2.5 3.5L5 6.5L7.5 3.5" />
-      </svg>
-    </button>
-
-    <button class="toolbar-btn" bind:this={insertButton} on:click={openInsertMenu} aria-label="Insert">
-      <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-        <path d="M8 3v10M3 8h10" />
-      </svg>
-      <span>Insert</span>
-      <svg class="caret" width="7" height="7" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M2.5 3.5L5 6.5L7.5 3.5" />
-      </svg>
-    </button>
-
-    <div class="toolbar-right">
-      {#if isMarkdownActive}
-        <button class="toolbar-btn" on:click={() => (markdownHelpOpen = true)} aria-label="Markdown guide">
-          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M2 4h5M2 8h5M2 12h3" />
-            <path d="M10.5 3.5v9M10.5 3.5l2 2.5 2-2.5M14.5 8.5l-2 2.5-2-2.5" />
-          </svg>
-          <span>Markdown</span>
-        </button>
-      {/if}
-
-      <button class="toolbar-btn" on:click={() => (shortcutsOpen = true)} aria-label="Keyboard shortcuts">
-        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
-          <circle cx="8" cy="8" r="6.5" />
-          <path d="M6.1 6.2a1.9 1.9 0 1 1 2.7 1.7c-.7.35-.9.7-.9 1.4" stroke-linejoin="round" />
-          <circle cx="8" cy="11.4" r="0.15" fill="currentColor" />
-        </svg>
-        <span>Shortcuts</span>
-      </button>
-
-      <button class="toolbar-btn" on:click={() => (settingsOpen = true)} aria-label="Settings">
-        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="8" cy="8" r="2.2" />
-          <path d="M8 2v1.6M8 12.4V14M14 8h-1.6M3.6 8H2M12.13 3.87l-1.13 1.13M4.99 11.01l-1.13 1.13M12.13 12.13l-1.13-1.13M4.99 4.99 3.87 3.87" />
-        </svg>
-        <span>Settings</span>
-      </button>
-    </div>
-  </div>
+  <ActionToolbar
+    {isMarkdownActive}
+    onOpenNotesMenu={openNotesMenu}
+    onOpenInsertMenu={openInsertMenu}
+    onShowMarkdownHelp={() => (markdownHelpOpen = true)}
+    onShowShortcuts={() => (shortcutsOpen = true)}
+    onShowSettings={() => (settingsOpen = true)}
+  />
 
   <div class="shell">
   <aside class="sidebar" style="width: {sidebarWidth}px">
@@ -1433,17 +869,17 @@
       on:contextmenu|preventDefault={openBackgroundMenu}
     >
       {#if isSearching}
-        {#each searchResults as note (note.id)}
-          <TreeNode item={{ id: note.id, title: note.title, children: [], isMarkdown: note.isMarkdown, isLocked: note.isLocked, createdAt: note.createdAt, sortOrder: note.sortOrder }} depth={0} {...treeNodeProps} />
+        {#each searchResults as note (searchResultKey(note))}
+          <TreeNode item={{ id: note.id, title: note.title, children: [], isMarkdown: note.isMarkdown, isLocked: note.isLocked, createdAt: note.createdAt, sortOrder: note.sortOrder, databaseId: note.databaseId, databaseName: note.databaseName }} depth={0} {...treeNodeProps} />
         {/each}
         {#if !searchResults.length}
           <p class="empty-hint">No matches</p>
         {/if}
       {:else}
-        {#each tree as item (item.id)}
+        {#each $tree as item (item.id)}
           <TreeNode {item} depth={0} {...treeNodeProps} />
         {/each}
-        {#if !tree.length}
+        {#if !$tree.length}
           <p class="empty-hint">Right-click to create a note</p>
         {/if}
         <div class="tree-spacer"></div>
@@ -1451,7 +887,7 @@
     </div>
 
     <div class="sidebar-bottom">
-      {#if activeDatabaseName}
+      {#if $activeDatabaseName}
         <button
           class="db-indicator"
           type="button"
@@ -1467,7 +903,7 @@
             <path d="M2.5 3.5V8c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2V3.5" />
             <path d="M2.5 8v4.5c0 1.1 2.46 2 5.5 2s5.5-.9 5.5-2V8" />
           </svg>
-          <span>{activeDatabaseName}</span>
+          <span>{$activeDatabaseName}</span>
         </button>
       {/if}
       <button class="theme-toggle" on:click={toggleTheme} aria-label="Toggle theme">
@@ -1487,8 +923,7 @@
     </div>
   </aside>
 
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="sidebar-resizer" class:active={isResizingSidebar} on:mousedown={startSidebarResize}></div>
+  <SidebarResizer bind:width={sidebarWidth} />
 
   <section class="editor-pane">
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1503,77 +938,8 @@
         />
       </div>
       <div class="header-meta">
-        {#if selectedId != null}
-          <div class="note-info">
-            <button
-              class="info-btn"
-              type="button"
-              on:click|stopPropagation={toggleNoteInfo}
-              aria-haspopup="dialog"
-              aria-expanded={noteInfoOpen}
-              aria-label="Note info"
-            >
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="8" cy="8" r="6.5" />
-                <path d="M8 7.2v4.3" />
-                <circle cx="8" cy="4.7" r="0.15" fill="currentColor" />
-              </svg>
-            </button>
-            {#if noteInfoOpen}
-              <div class="note-info-popover">
-                {#if selectedNoteCreatedAt}
-                  <div class="note-info-row">
-                    <div class="note-info-text">
-                      <span class="note-info-label">Created</span>
-                      <span class="note-info-value">{selectedNoteCreatedAt.replace('T', ' ')}</span>
-                    </div>
-                    <button
-                      class="note-info-copy"
-                      type="button"
-                      on:click={() => selectedNoteCreatedAt && copyNoteInfoField('created', selectedNoteCreatedAt)}
-                      aria-label="Copy created date"
-                    >
-                      {#if copiedField === 'created'}
-                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                          <path d="M3 8.5L6.5 12L13 4.5" />
-                        </svg>
-                      {:else}
-                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-                          <rect x="5.5" y="5.5" width="8" height="8" rx="1" />
-                          <path d="M3 10.5V3.5a1 1 0 0 1 1-1H10" />
-                        </svg>
-                      {/if}
-                    </button>
-                  </div>
-                {/if}
-                {#if selectedNoteUpdatedAt}
-                  <div class="note-info-row">
-                    <div class="note-info-text">
-                      <span class="note-info-label">Updated</span>
-                      <span class="note-info-value">{selectedNoteUpdatedAt.replace('T', ' ')}</span>
-                    </div>
-                    <button
-                      class="note-info-copy"
-                      type="button"
-                      on:click={() => selectedNoteUpdatedAt && copyNoteInfoField('updated', selectedNoteUpdatedAt)}
-                      aria-label="Copy updated date"
-                    >
-                      {#if copiedField === 'updated'}
-                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                          <path d="M3 8.5L6.5 12L13 4.5" />
-                        </svg>
-                      {:else}
-                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-                          <rect x="5.5" y="5.5" width="8" height="8" rx="1" />
-                          <path d="M3 10.5V3.5a1 1 0 0 1 1-1H10" />
-                        </svg>
-                      {/if}
-                    </button>
-                  </div>
-                {/if}
-              </div>
-            {/if}
-          </div>
+        {#if $selectedId != null}
+          <NoteInfoPopover createdAt={selectedNoteCreatedAt} updatedAt={selectedNoteUpdatedAt} onError={(msg) => status.set(msg)} />
         {/if}
         {#if isLockedActive}
           <svg class="icon lock-indicator" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-label="Locked">
@@ -1590,91 +956,36 @@
         <MarkdownEditor
           bind:this={markdownEditorRef}
           content={noteText}
-          noteId={selectedId ?? -1}
+          noteId={$selectedId ?? -1}
           onUpdate={handleMarkdownEditorUpdate}
           onOpenLink={openLink}
           placeholder="Start typing instantly..."
           editable={!isLockedActive}
         />
       {:else}
-        <div class="plain-editor-wrap">
-          {#if showLineNumbersActive}
-            <pre class="line-gutter" bind:this={gutterEl} aria-hidden="true">{plainLineNumberText}</pre>
-          {/if}
-          <textarea
-            bind:this={textarea}
-            bind:value={noteText}
-            class="editor"
-            class:no-wrap={showLineNumbersActive}
-            placeholder="Start typing instantly..."
-            readonly={isLockedActive}
-            on:input={handleEditorInput}
-            on:paste={handlePlainTextPaste}
-            on:keydown={handlePlainTextKeydown}
-            on:scroll={syncGutterScroll}
-          ></textarea>
-        </div>
+        <PlainTextEditor
+          bind:this={plainEditorRef}
+          content={noteText}
+          noteId={$selectedId ?? -1}
+          onUpdate={handlePlainEditorUpdate}
+          placeholder="Start typing instantly..."
+          editable={!isLockedActive}
+          showLineNumbers={showLineNumbersActive}
+        />
       {/if}
     </div>
 
-    <footer class="footer" on:contextmenu|preventDefault>
-      <div class="search-box">
-        <div class="search-input-wrap">
-          <input class="search-input" class:with-scope-btn={databases.length > 1} bind:value={query} on:keydown={handleTreeKeydown} placeholder="Search notes" />
-          {#if databases.length > 1}
-            <button
-              class="search-scope-btn"
-              class:active={searchAllDatabases}
-              on:click={toggleSearchAllDatabases}
-              aria-pressed={searchAllDatabases}
-              aria-label="Search all databases"
-              title="Search all databases"
-            >
-              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="8" cy="8" r="6.2" />
-                <ellipse cx="8" cy="8" rx="2.6" ry="6.2" />
-                <path d="M1.9 5.8h12.2M1.9 10.2h12.2" />
-              </svg>
-            </button>
-          {/if}
-        </div>
-        {#if isSearching}
-          <span class="search-count">{searchResults.length ? `${searchMatchIndex + 1}/${searchResults.length}` : '0/0'}</span>
-          <button
-            class="search-nav-btn"
-            on:click={() => goToSearchMatch(-1)}
-            disabled={!searchResults.length}
-            aria-label="Previous match"
-          >
-            <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M2.5 6.5L5 3.5L7.5 6.5" />
-            </svg>
-          </button>
-          <button
-            class="search-nav-btn"
-            on:click={() => goToSearchMatch(1)}
-            disabled={!searchResults.length}
-            aria-label="Next match"
-          >
-            <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M2.5 3.5L5 6.5L7.5 3.5" />
-            </svg>
-          </button>
-        {/if}
-      </div>
-      <button
-        class="md-toggle"
-        class:active={isMarkdownActive}
-        on:click={toggleMarkdown}
-        disabled={selectedId == null || isLockedActive}
-        aria-pressed={isMarkdownActive}
-      >
-        Markdown
-      </button>
-      <div class="footer-right">
-        <span class="status">{status}</span>
-      </div>
-    </footer>
+    <Footer
+      bind:query
+      {isSearching}
+      searchResultsCount={searchResults.length}
+      {searchMatchIndex}
+      {isMarkdownActive}
+      {isLockedActive}
+      onSearchKeydown={handleTreeKeydown}
+      onGoToSearchMatch={goToSearchMatch}
+      onToggleMarkdown={toggleMarkdown}
+    />
   </section>
   </div>
 </div>
@@ -1705,8 +1016,8 @@
       // switchToDatabase - refresh so Alt+B cycling stays in sync.
       void databaseService.getAppState().then((state) => {
         if (state) {
-          databases = state.databases;
-          activeDatabaseId = state.activeDatabaseId;
+          databases.set(state.databases);
+          activeDatabaseId.set(state.activeDatabaseId);
         }
       });
     }}
@@ -1714,7 +1025,7 @@
     onSwitchDatabase={switchToDatabase}
     onRequestConfirm={confirmDialog}
     onImported={async () => {
-      startupError = null;
+      startupError.set(null);
       resetNoteScopedState();
       await initializeNotes();
     }}
@@ -1873,25 +1184,6 @@
     min-height: 0;
   }
 
-  .sidebar-resizer {
-    flex-shrink: 0;
-    width: 5px;
-    margin-left: -2px;
-    margin-right: -2px;
-    z-index: 10;
-    cursor: col-resize;
-    background: transparent;
-    border-right: 1px solid var(--border);
-  }
-
-  .sidebar-resizer:hover {
-    border-right: 1px solid var(--muted);
-  }
-
-  .sidebar-resizer.active {
-    border-right: 2px solid var(--accent);
-  }
-
   .sidebar-bottom {
     display: flex;
     align-items: center;
@@ -2032,334 +1324,6 @@
   .lock-indicator {
     flex-shrink: 0;
     color: var(--muted);
-  }
-
-  .note-info {
-    position: relative;
-  }
-
-  .info-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.4rem;
-    height: 1.4rem;
-    border: none;
-    border-radius: 50%;
-    background: transparent;
-    color: var(--muted);
-    padding: 0;
-  }
-
-  .info-btn:hover,
-  .info-btn[aria-expanded='true'] {
-    background: var(--panel-2);
-    color: var(--text);
-  }
-
-  .note-info-popover {
-    position: absolute;
-    top: calc(100% + 0.35rem);
-    right: 0;
-    z-index: 10;
-    width: max-content;
-    min-width: 11rem;
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    border-radius: 0.5rem;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-    padding: 0.4rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-
-  .note-info-row {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 0.3rem 0.4rem;
-    border-radius: 0.35rem;
-  }
-
-  .note-info-row:hover {
-    background: var(--panel);
-  }
-
-  .note-info-text {
-    display: flex;
-    flex-direction: column;
-    gap: 0.05rem;
-    min-width: 0;
-    margin-right: auto;
-  }
-
-  .note-info-label {
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    color: var(--muted);
-  }
-
-  .note-info-value {
-    font-size: 0.76rem;
-    color: var(--text);
-    white-space: nowrap;
-  }
-
-  .note-info-copy {
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.4rem;
-    height: 1.4rem;
-    border: 1px solid var(--border);
-    border-radius: 0.35rem;
-    background: var(--panel);
-    color: var(--muted);
-    padding: 0;
-  }
-
-  .note-info-copy:hover {
-    color: var(--accent);
-    border-color: var(--accent);
-  }
-
-  .md-toggle {
-    flex-shrink: 0;
-    border: 1px solid var(--border);
-    border-radius: 0.4rem;
-    background: var(--panel-2);
-    color: var(--muted);
-    font-size: 0.72rem;
-    padding: 0.3rem 0.55rem;
-    cursor: pointer;
-  }
-
-  .md-toggle:hover:not(:disabled) {
-    color: var(--text);
-  }
-
-  .md-toggle.active,
-  .md-toggle.active:hover {
-    background: var(--border);
-    color: var(--md-color);
-  }
-
-  .md-toggle:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-
-  .action-toolbar {
-    display: flex;
-    align-items: center;
-    flex-shrink: 0;
-    gap: 0.3rem;
-    height: 30px;
-    padding: 0 0.5rem;
-    border-bottom: 1px solid var(--border);
-    background: var(--panel);
-  }
-
-  .toolbar-btn {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    height: 22px;
-    border: 0;
-    border-radius: 0.3rem;
-    padding: 0 0.4rem;
-    background: transparent;
-    color: var(--muted);
-    font-size: 0.8rem;
-    line-height: 1;
-  }
-
-  .toolbar-btn:hover {
-    background: var(--panel-2);
-    color: var(--text);
-  }
-
-
-  .toolbar-btn .caret {
-    opacity: 0.7;
-  }
-
-  .toolbar-right {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    margin-left: auto;
-  }
-
-  .editor {
-    flex: 1;
-    width: 100%;
-    min-width: 0;
-    border: 0;
-    resize: none;
-    outline: none;
-    padding: 1rem 1.1rem;
-    background: transparent;
-    color: inherit;
-    line-height: 1.55;
-  }
-
-  .editor::placeholder {
-    color: var(--muted);
-    opacity: 1;
-  }
-
-  .plain-editor-wrap {
-    flex: 1;
-    display: flex;
-    min-height: 0;
-  }
-
-  /* Wrapping is disabled while the gutter is showing (see .no-wrap below) so
-     every logical line renders as exactly one row - required for the
-     line-number-per-logical-line approach above to actually line up with
-     its text; a wrapped line would otherwise push every number beneath it
-     out of alignment. */
-  .editor.no-wrap {
-    white-space: pre;
-    overflow-x: auto;
-  }
-
-  .line-gutter {
-    flex-shrink: 0;
-    margin: 0;
-    min-width: 2ch;
-    padding: 1rem 0.6rem 1rem 0.7rem;
-    font-family: inherit;
-    /* Smaller than the note text (a smaller, quieter rail reads better than
-       numbers competing at the same size), but line-height is set in rem
-       (absolute, independent of this element's own smaller font-size)
-       rather than as a unitless multiplier, so each row still lines up
-       exactly with .editor's own 1.55 line-height despite the smaller
-       font. No background tint anymore either - that plus the border was
-       what made the gutter read as a heavy, separate block instead of a
-       thin rail. */
-    font-size: 0.75em;
-    font-variant-numeric: tabular-nums;
-    line-height: 1.55rem;
-    color: var(--muted);
-    text-align: right;
-    user-select: none;
-    overflow: hidden;
-    white-space: pre;
-    border-right: 1px solid var(--border);
-    opacity: 0.8;
-  }
-
-  .footer {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 0.9rem;
-    border-top: 1px solid var(--border);
-    font-size: 0.8rem;
-    color: var(--muted);
-  }
-
-  .search-box {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-    flex-shrink: 0;
-  }
-
-  .search-input-wrap {
-    position: relative;
-    display: flex;
-    align-items: center;
-    width: 200px;
-    flex-shrink: 0;
-  }
-
-  .footer .search-input {
-    width: 100%;
-    border: 1px solid var(--border);
-    border-radius: 0.5rem;
-    background: var(--panel-2);
-    color: inherit;
-    font-size: 0.8rem;
-    padding: 0.35rem 0.6rem;
-  }
-
-  .footer .search-input.with-scope-btn {
-    padding-right: 1.95rem;
-  }
-
-  .search-count {
-    font-size: 0.75rem;
-    color: var(--muted);
-    min-width: 2.5rem;
-    text-align: center;
-  }
-
-  .footer-right {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    margin-left: auto;
-  }
-
-  .status {
-    font-size: 0.72rem;
-    color: var(--muted);
-    white-space: nowrap;
-  }
-
-  .search-nav-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.4rem;
-    height: 1.4rem;
-    border: 1px solid var(--border);
-    border-radius: 0.35rem;
-    background: var(--panel-2);
-    color: inherit;
-    cursor: pointer;
-  }
-
-  .search-nav-btn:hover:not(:disabled) {
-    background: var(--panel-3, var(--panel-2));
-  }
-
-  .search-nav-btn:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-
-  .search-scope-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    position: absolute;
-    right: 0.25rem;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 1.5rem;
-    height: 1.5rem;
-    border: none;
-    border-radius: 0.3rem;
-    background: transparent;
-    color: var(--muted);
-    cursor: pointer;
-  }
-
-  .search-scope-btn:hover {
-    color: var(--text);
-  }
-
-  .search-scope-btn.active,
-  .search-scope-btn.active:hover {
-    background: rgba(77, 208, 200, 0.16);
-    color: #4dd0c8;
   }
 
   .link-toast {
