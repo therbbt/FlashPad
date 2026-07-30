@@ -7,6 +7,7 @@
   import { databases, searchAllDatabases, toggleSearchAllDatabases } from '../stores/databaseStore';
   import { selectedId } from '../stores/notesStore';
   import { status } from '../stores/statusStore';
+  import { vimModeIndicator } from '../stores/vimModeIndicator';
 
   export let query: string;
   export let isSearching: boolean;
@@ -80,6 +81,9 @@
     Markdown
   </button>
   <div class="footer-right">
+    {#if $vimModeIndicator}
+      <span class="vim-mode-badge">{$vimModeIndicator}</span>
+    {/if}
     <span class="status">{$status}</span>
   </div>
 </footer>
@@ -167,6 +171,18 @@
   .status {
     font-size: 0.72rem;
     color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .vim-mode-badge {
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--md-color, #4dd0c8);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 0.3rem;
+    padding: 0.1rem 0.4rem;
     white-space: nowrap;
   }
 

@@ -8,6 +8,10 @@ export interface FlashPadSettings {
   // now"), so the check on the next startup doesn't nag about the same
   // release again - only a newer version reopens the toast.
   dismissedUpdateVersion: string | null;
+  // Modal (vim-style) editing for plain-text notes. Off by default so
+  // non-vim users are never surprised by modal behavior - only applies to
+  // PlainTextEditor, not the Markdown/rich-text editor.
+  vimMode: boolean;
 }
 
 const STORAGE_KEY = 'flashpad.settings';
@@ -17,6 +21,7 @@ const DEFAULTS: FlashPadSettings = {
   lightPaletteId: DEFAULT_LIGHT_PALETTE_ID,
   darkPaletteId: DEFAULT_DARK_PALETTE_ID,
   dismissedUpdateVersion: null,
+  vimMode: false,
 };
 
 export class SettingsService {
@@ -31,6 +36,7 @@ export class SettingsService {
       lightPaletteId: parsed.lightPaletteId ?? DEFAULTS.lightPaletteId,
       darkPaletteId: parsed.darkPaletteId ?? DEFAULTS.darkPaletteId,
       dismissedUpdateVersion: parsed.dismissedUpdateVersion ?? DEFAULTS.dismissedUpdateVersion,
+      vimMode: parsed.vimMode ?? DEFAULTS.vimMode,
     };
     return this.cached;
   }
@@ -61,5 +67,9 @@ export class SettingsService {
 
   async saveDismissedUpdateVersion(version: string): Promise<void> {
     await this.save({ dismissedUpdateVersion: version });
+  }
+
+  async saveVimMode(vimMode: boolean): Promise<void> {
+    await this.save({ vimMode });
   }
 }
