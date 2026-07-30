@@ -159,6 +159,33 @@
             '.cm-gutters': { backgroundColor: 'transparent', color: 'var(--muted)', border: 'none', borderRight: '1px solid var(--border)' },
             '.cm-lineNumbers .cm-gutterElement': { padding: '0 0.6rem 0 0.7rem', fontSize: '0.75em' },
             '.cm-placeholder': { color: 'var(--muted)', opacity: '1' },
+            // drawSelection()'s own thin caret (shown whenever vim mode is
+            // off, or in vim's insert mode) hardcodes a black border by
+            // default (@codemirror/view's base theme: ".cm-cursor { border-
+            // left: 1.2px solid black }") - it only lightens that for CM6's
+            // own notion of a "dark" theme, which isn't set here since
+            // FlashPad has its own multi-palette system rather than a
+            // binary light/dark flag. currentColor keeps it in sync with
+            // whichever palette is active; !important for the same
+            // cascade-ordering reason as the fat-cursor override below.
+            '.cm-cursor': { borderLeftColor: 'currentColor !important' },
+            // @replit/codemirror-vim's block ("fat") cursor - shown in normal/
+            // visual mode in place of the usual thin caret - hardcodes a
+            // salmon-pink background (#ff9696) with a plain `background:`
+            // declaration (no !important), regardless of app theme. Its own
+            // theme is registered with Prec.highest, so a plain override
+            // here isn't guaranteed to win the CSS cascade - !important
+            // makes it win outright instead of depending on injection order.
+            // Color matches the "search all databases" toggle's active
+            // teal (Footer.svelte's .search-scope-btn.active) - that color
+            // isn't part of the palette system (no CSS variable for it,
+            // unlike --accent/--md-color), so it's the same literal here.
+            '.cm-fat-cursor': { background: '#4dd0c8 !important' },
+            '&:not(.cm-focused) .cm-fat-cursor': {
+              background: 'none !important',
+              outline: 'solid 1px #4dd0c8 !important',
+              color: 'transparent !important',
+            },
           }),
         ],
       }),
