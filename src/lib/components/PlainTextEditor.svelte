@@ -3,199 +3,213 @@
   // placeholder/editable) so App.svelte's dual-editor dispatch pattern
   // (isMarkdownActive ? markdownEditorRef : plainEditorRef) needs no special
   // casing beyond which ref it calls.
+  //
+  // Built on CodeMirror 6 rather than a raw <textarea> specifically so vim
+  // mode (@replit/codemirror-vim) can be layered on top - CM6's own
+  // history()/lineNumbers() extensions also replace what used to be a
+  // hand-rolled undo stack and a manually scroll-synced <pre> gutter, so
+  // this is a net simplification, not just an addition.
+  import { onMount, onDestroy } from 'svelte';
+  import { EditorState, Compartment } from '@codemirror/state';
+  import { EditorView, keymap, lineNumbers, drawSelection, placeholder as placeholderExt } from '@codemirror/view';
+  import { defaultKeymap, historyKeymap, history } from '@codemirror/commands';
+  import { vim, getCM } from '@replit/codemirror-vim';
+  import { vimModeIndicator } from '../stores/vimModeIndicator';
+
   export let content: string;
   export let noteId: number;
   export let onUpdate: (text: string) => void;
   export let placeholder = '';
   export let editable = true;
   export let showLineNumbers = false;
+  export let vimMode = false;
 
-  let textarea: HTMLTextAreaElement;
-  let gutterEl: HTMLPreElement | undefined;
+  let container: HTMLDivElement;
+  let view: EditorView | undefined;
   let lastNoteId: number | undefined;
-  let value = content;
+  let unsubscribeVimModeChange: (() => void) | undefined;
 
-  // Own undo/redo stack, independent of the browser's native textarea undo -
-  // Markdown notes already have reliable undo via Tiptap/ProseMirror's
-  // history extension, but the native undo manager for a bound <textarea>
-  // isn't dependable across platforms (WebKitGTK on Linux in particular).
-  let plainUndoStack: { value: string; start: number; end: number }[] = [];
-  let plainRedoStack: { value: string; start: number; end: number }[] = [];
-  let lastPlainUndoSnapshotAt = 0;
-  const PLAIN_UNDO_COALESCE_MS = 500;
-
-  // Resyncs from the parent's content and resets undo history only when the
-  // *selected note* changes - not on every keystroke, matching how
-  // MarkdownEditor only calls setContent on a noteId change rather than
-  // syncing continuously off the content prop.
-  $: if (noteId !== lastNoteId) {
-    value = content;
-    plainUndoStack = [];
-    plainRedoStack = [];
-    lastNoteId = noteId;
-  }
-
-  // Line numbers are per logical line (split on \n), not per wrapped visual
-  // row - matching how editors typically define "line numbers" (e.g. the
-  // line a cursor position refers to), and avoiding the cost/fragility of
-  // measuring where a plain <textarea> actually wraps text, which would
-  // need to be recomputed on every resize as well as every edit. The plain
-  // editor switches to no-wrap/horizontal-scroll while this is on (see the
-  // .no-wrap class below) specifically so each logical line always renders
-  // as exactly one row, keeping numbers correctly aligned with their line -
-  // without that, a wrapped line would silently throw off every number
-  // beneath it.
-  $: plainLineNumberText = showLineNumbers ? Array.from({ length: value.split('\n').length }, (_, i) => i + 1).join('\n') : '';
-
-  // Keeps the gutter's vertical position matched to the textarea's own
-  // scroll - re-runs whenever the gutter is (re)mounted too, so toggling
-  // the setting on while already scrolled down doesn't leave the gutter
-  // stuck at the top until the next scroll event.
-  $: if (gutterEl && textarea) {
-    gutterEl.scrollTop = textarea.scrollTop;
-  }
-
-  const syncGutterScroll = () => {
-    if (gutterEl && textarea) gutterEl.scrollTop = textarea.scrollTop;
-  };
-
-  const emitUpdate = () => onUpdate(value);
-
-  export function focus() {
-    textarea?.focus();
-  }
-
-  export function insertAtCursor(text: string) {
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    pushPlainUndoSnapshot(true);
-    value = `${value.slice(0, start)}${text}${value.slice(end)}`;
-    requestAnimationFrame(() => {
-      const cursor = start + text.length;
-      textarea.focus();
-      textarea.setSelectionRange(cursor, cursor);
-    });
-    emitUpdate();
-  }
-
-  // Records a checkpoint to undo back to. `force` is for discrete
-  // programmatic edits (paste, insert-timestamp/-divider/-dateline) that
-  // should always be their own undo step; native typing goes through the
-  // keydown handler below without force, so a burst of consecutive
-  // keystrokes within PLAIN_UNDO_COALESCE_MS collapses into a single step
-  // (matching how native undo normally groups continuous typing) instead of
-  // undoing one character at a time. Snapshotting is driven by keydown
-  // (fires before the keystroke's edit is applied) rather than the newer
-  // beforeinput event, since beforeinput support on plain <textarea>
-  // elements (as opposed to contenteditable) has historically been
-  // inconsistent on WebKitGTK.
-  const pushPlainUndoSnapshot = (force = false) => {
-    const now = Date.now();
-    if (!force && plainUndoStack.length && now - lastPlainUndoSnapshotAt < PLAIN_UNDO_COALESCE_MS) {
-      lastPlainUndoSnapshotAt = now;
-      return;
-    }
-    plainUndoStack = [
-      ...plainUndoStack.slice(-199),
-      { value, start: textarea?.selectionStart ?? value.length, end: textarea?.selectionEnd ?? value.length },
-    ];
-    plainRedoStack = [];
-    lastPlainUndoSnapshotAt = now;
-  };
-
-  const undoPlainText = () => {
-    if (!plainUndoStack.length) return;
-    const current = { value, start: textarea.selectionStart, end: textarea.selectionEnd };
-    const prev = plainUndoStack[plainUndoStack.length - 1];
-    plainUndoStack = plainUndoStack.slice(0, -1);
-    plainRedoStack = [...plainRedoStack, current];
-    value = prev.value;
-    requestAnimationFrame(() => {
-      textarea.focus();
-      textarea.setSelectionRange(prev.start, prev.end);
-    });
-    emitUpdate();
-  };
-
-  const redoPlainText = () => {
-    if (!plainRedoStack.length) return;
-    const current = { value, start: textarea.selectionStart, end: textarea.selectionEnd };
-    const next = plainRedoStack[plainRedoStack.length - 1];
-    plainRedoStack = plainRedoStack.slice(0, -1);
-    plainUndoStack = [...plainUndoStack, current];
-    value = next.value;
-    requestAnimationFrame(() => {
-      textarea.focus();
-      textarea.setSelectionRange(next.start, next.end);
-    });
-    emitUpdate();
-  };
-
-  // Keys that don't modify the field's content - no undo checkpoint needed
-  // for these (also avoids fighting the tree/search's own arrow-key
-  // navigation shortcuts).
-  const NON_EDITING_KEYS = new Set([
-    'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown',
-    'Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Escape',
-    'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
-  ]);
-
-  const handleKeydown = (event: KeyboardEvent) => {
-    if (!editable) return;
-    if (event.ctrlKey || event.metaKey) {
-      const key = event.key.toLowerCase();
-      if (key === 'z' && !event.shiftKey) {
-        event.preventDefault();
-        undoPlainText();
-      } else if ((key === 'z' && event.shiftKey) || key === 'y') {
-        event.preventDefault();
-        redoPlainText();
-      }
-      return;
-    }
-    if (!NON_EDITING_KEYS.has(event.key)) pushPlainUndoSnapshot(false);
-  };
+  const vimCompartment = new Compartment();
+  const lineDisplayCompartment = new Compartment();
+  const editableCompartment = new Compartment();
 
   // Plain-text notes should never pick up rich formatting from the
   // clipboard (bold/colors/fonts from a pasted webpage, Word doc, etc.) -
   // force the text/plain flavor regardless of how Ctrl+V or the OS's own
   // "Paste" action populated the clipboard. Markdown notes keep the
   // editor's normal paste handling, which is expected to preserve
-  // formatting.
+  // formatting. This is orthogonal to vim's own p/P (those operate on
+  // vim's internal register, not the OS clipboard, and never fire this
+  // DOM "paste" event).
   //
   // Even the text/plain flavor isn't clean, though: when copying from a
   // rendered webpage, browsers generate that plain-text fallback from the
   // page's DOM structure, which bakes in each source element's indentation
   // as literal leading spaces/tabs on every line - strip those per line so
   // pasted lines start flush left, matching what plain notes expect.
-  const handlePaste = (event: ClipboardEvent) => {
-    event.preventDefault();
-    const raw = event.clipboardData?.getData('text/plain') ?? '';
-    const text = raw
+  const cleanPastedText = (raw: string) =>
+    raw
       .split('\n')
       .map((line) => line.replace(/^[ \t]+/, ''))
       .join('\n');
-    insertAtCursor(text);
+
+  // Line numbers are per logical line, matching how editors typically
+  // define "line numbers". Wrapping is disabled while the gutter shows so
+  // each logical line renders as exactly one row and stays aligned with
+  // its number - CM6 doesn't wrap by default, so the non-gutter case has
+  // to opt back into wrapping instead.
+  const lineDisplayExtensions = (show: boolean) => (show ? [lineNumbers()] : [EditorView.lineWrapping]);
+
+  const editableExtensions = (isEditable: boolean) => [
+    EditorView.editable.of(isEditable),
+    EditorState.readOnly.of(!isEditable),
+  ];
+
+  const formatVimMode = (mode: string, subMode?: string) => {
+    if (mode === 'visual') {
+      if (subMode === 'linewise') return 'V-LINE';
+      if (subMode === 'blockwise') return 'V-BLOCK';
+      return 'VISUAL';
+    }
+    return mode.toUpperCase();
   };
+
+  const applyVimMode = (enabled: boolean) => {
+    if (!view) return;
+    view.dispatch({ effects: vimCompartment.reconfigure(enabled ? [vim()] : []) });
+    unsubscribeVimModeChange?.();
+    unsubscribeVimModeChange = undefined;
+    vimModeIndicator.set(null);
+    if (!enabled) return;
+    const cm = getCM(view);
+    if (!cm) return;
+    const handleModeChange = (e: { mode: string; subMode?: string }) => {
+      vimModeIndicator.set(formatVimMode(e.mode, e.subMode));
+    };
+    cm.on('vim-mode-change', handleModeChange);
+    unsubscribeVimModeChange = () => cm.off('vim-mode-change', handleModeChange);
+    vimModeIndicator.set('NORMAL');
+  };
+
+  // No ex command-line: FlashPad already auto-saves, so :w/:q-style
+  // commands have nothing meaningful to do, and the command bar itself is
+  // more UI than a single-pane note app needs. `Vim.unmap(':', ...)`
+  // doesn't actually stop the dialog (colon is wired in below the
+  // remappable keymap layer), so this intercepts the keydown itself
+  // instead - in the capture phase on view.dom, an ANCESTOR of the actual
+  // focused element (view.contentDOM), so it runs before vim's own
+  // handler even sees the event, and stopPropagation() here keeps it from
+  // ever reaching contentDOM at all. Skipped while in insert mode so a
+  // literal ':' still types normally (e.g. writing a time like "9:30").
+  // `/` search is a separate, still-active binding, unaffected by this.
+  const interceptColonWhileVimActive = (event: KeyboardEvent) => {
+    if (!vimMode || event.key !== ':' || !view) return;
+    if (getCM(view)?.state.vim?.insertMode) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  // Vim's own Escape (leave insert/visual mode) must not bubble to
+  // App.svelte's global window keydown handler, which hides the whole app
+  // window on a bare Escape when no dialog is open. Attached directly on
+  // the editor's DOM so it runs before ancestor bubble-phase listeners.
+  // Only active while vim mode is on - Escape keeps bubbling (today's
+  // behavior) when it's off.
+  const stopEscapeWhileVimActive = (event: KeyboardEvent) => {
+    if (vimMode && event.key === 'Escape') event.stopPropagation();
+  };
+
+  onMount(() => {
+    view = new EditorView({
+      parent: container,
+      state: EditorState.create({
+        doc: content,
+        extensions: [
+          // vim must come before other keymaps so it gets first crack at keys.
+          vimCompartment.of(vimMode ? [vim()] : []),
+          history(),
+          keymap.of([...defaultKeymap, ...historyKeymap]),
+          drawSelection(),
+          lineDisplayCompartment.of(lineDisplayExtensions(showLineNumbers)),
+          editableCompartment.of(editableExtensions(editable)),
+          ...(placeholder ? [placeholderExt(placeholder)] : []),
+          EditorView.updateListener.of((update) => {
+            if (update.docChanged) onUpdate(update.state.doc.toString());
+          }),
+          EditorView.domEventHandlers({
+            paste: (event, editorView) => {
+              event.preventDefault();
+              const raw = event.clipboardData?.getData('text/plain') ?? '';
+              const text = cleanPastedText(raw);
+              const { from, to } = editorView.state.selection.main;
+              editorView.dispatch({
+                changes: { from, to, insert: text },
+                selection: { anchor: from + text.length },
+                scrollIntoView: true,
+              });
+              return true;
+            },
+          }),
+          EditorView.theme({
+            '&': { color: 'inherit', backgroundColor: 'transparent', height: '100%' },
+            '&.cm-focused': { outline: 'none' },
+            '.cm-content': { fontFamily: 'inherit', padding: '1rem 1.1rem', caretColor: 'currentColor' },
+            '.cm-scroller': { fontFamily: 'inherit', lineHeight: '1.55' },
+            '.cm-line': { padding: '0' },
+            '.cm-gutters': { backgroundColor: 'transparent', color: 'var(--muted)', border: 'none', borderRight: '1px solid var(--border)' },
+            '.cm-lineNumbers .cm-gutterElement': { padding: '0 0.6rem 0 0.7rem', fontSize: '0.75em' },
+            '.cm-placeholder': { color: 'var(--muted)', opacity: '1' },
+          }),
+        ],
+      }),
+    });
+    view.dom.addEventListener('keydown', stopEscapeWhileVimActive);
+    view.dom.addEventListener('keydown', interceptColonWhileVimActive, true);
+    lastNoteId = noteId;
+    // `view` becoming truthy re-triggers the `applyVimMode` reactive
+    // statement below, which performs the initial vim-mode setup - no need
+    // to call it here too.
+  });
+
+  onDestroy(() => {
+    unsubscribeVimModeChange?.();
+    vimModeIndicator.set(null);
+    view?.dom.removeEventListener('keydown', interceptColonWhileVimActive, true);
+    view?.destroy();
+  });
+
+  // Resyncs from the parent's content only when the *selected note*
+  // changes - not on every keystroke, matching MarkdownEditor's
+  // noteId-gated setContent.
+  $: if (view && noteId !== lastNoteId) {
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: content },
+      selection: { anchor: 0 },
+    });
+    lastNoteId = noteId;
+  }
+
+  $: if (view) view.dispatch({ effects: lineDisplayCompartment.reconfigure(lineDisplayExtensions(showLineNumbers)) });
+  $: if (view) view.dispatch({ effects: editableCompartment.reconfigure(editableExtensions(editable)) });
+  $: if (view) applyVimMode(vimMode);
+
+  export function focus() {
+    view?.focus();
+  }
+
+  export function insertAtCursor(text: string) {
+    if (!view) return;
+    const { from, to } = view.state.selection.main;
+    view.dispatch({
+      changes: { from, to, insert: text },
+      selection: { anchor: from + text.length },
+      scrollIntoView: true,
+    });
+    view.focus();
+  }
 </script>
 
-<div class="plain-editor-wrap">
-  {#if showLineNumbers}
-    <pre class="line-gutter" bind:this={gutterEl} aria-hidden="true">{plainLineNumberText}</pre>
-  {/if}
-  <textarea
-    bind:this={textarea}
-    bind:value
-    class="editor"
-    class:no-wrap={showLineNumbers}
-    {placeholder}
-    readonly={!editable}
-    on:input={emitUpdate}
-    on:paste={handlePaste}
-    on:keydown={handleKeydown}
-    on:scroll={syncGutterScroll}
-  ></textarea>
-</div>
+<div class="plain-editor-wrap" bind:this={container}></div>
 
 <style>
   .plain-editor-wrap {
@@ -204,57 +218,9 @@
     min-height: 0;
   }
 
-  .editor {
+  .plain-editor-wrap :global(.cm-editor) {
     flex: 1;
     width: 100%;
     min-width: 0;
-    border: 0;
-    resize: none;
-    outline: none;
-    padding: 1rem 1.1rem;
-    background: transparent;
-    color: inherit;
-    line-height: 1.55;
-  }
-
-  .editor::placeholder {
-    color: var(--muted);
-    opacity: 1;
-  }
-
-  /* Wrapping is disabled while the gutter is showing (see .no-wrap below) so
-     every logical line renders as exactly one row - required for the
-     line-number-per-logical-line approach above to actually line up with
-     its text; a wrapped line would otherwise push every number beneath it
-     out of alignment. */
-  .editor.no-wrap {
-    white-space: pre;
-    overflow-x: auto;
-  }
-
-  .line-gutter {
-    flex-shrink: 0;
-    margin: 0;
-    min-width: 2ch;
-    padding: 1rem 0.6rem 1rem 0.7rem;
-    font-family: inherit;
-    /* Smaller than the note text (a smaller, quieter rail reads better than
-       numbers competing at the same size), but line-height is set in rem
-       (absolute, independent of this element's own smaller font-size)
-       rather than as a unitless multiplier, so each row still lines up
-       exactly with .editor's own 1.55 line-height despite the smaller
-       font. No background tint anymore either - that plus the border was
-       what made the gutter read as a heavy, separate block instead of a
-       thin rail. */
-    font-size: 0.75em;
-    font-variant-numeric: tabular-nums;
-    line-height: 1.55rem;
-    color: var(--muted);
-    text-align: right;
-    user-select: none;
-    overflow: hidden;
-    white-space: pre;
-    border-right: 1px solid var(--border);
-    opacity: 0.8;
   }
 </style>

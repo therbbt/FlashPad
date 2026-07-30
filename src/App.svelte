@@ -98,6 +98,7 @@
   let isMarkdownActive = false;
   let isLockedActive = false;
   let showLineNumbersActive = false;
+  let vimModeEnabled = false;
   let markdownEditorRef: MarkdownEditor | undefined;
   let plainEditorRef: PlainTextEditor | undefined;
   let treeEl: HTMLDivElement;
@@ -562,12 +563,18 @@
   const handleTreeKeydown = (event: KeyboardEvent) => {
     if (!visibleFlat.length) return;
     const currentIndex = visibleFlat.findIndex((v) => v.key === $focusedKey);
+    // This handler also runs for the search input (see onSearchKeydown on
+    // Footer) - j/k must not hijack normal typing there, so they're only
+    // treated as vim-style up/down when the tree itself has focus.
+    const inSearchInput = (event.target as HTMLElement | null)?.tagName === 'INPUT';
+    const vimDown = vimModeEnabled && !inSearchInput && event.key === 'j';
+    const vimUp = vimModeEnabled && !inSearchInput && event.key === 'k';
 
-    if (event.key === 'ArrowDown') {
+    if (event.key === 'ArrowDown' || vimDown) {
       event.preventDefault();
       const next = visibleFlat[Math.min(currentIndex + 1, visibleFlat.length - 1)];
       focusedKey.set(next?.key ?? visibleFlat[0].key);
-    } else if (event.key === 'ArrowUp') {
+    } else if (event.key === 'ArrowUp' || vimUp) {
       event.preventDefault();
       const prevIndex = currentIndex <= 0 ? 0 : currentIndex - 1;
       focusedKey.set(visibleFlat[prevIndex]?.key ?? visibleFlat[0].key);
@@ -624,6 +631,11 @@
     darkPaletteId = id;
     void settingsService.saveDarkPalette(id);
     if (theme === 'dark') applyActivePalette();
+  };
+
+  const setVimMode = (enabled: boolean) => {
+    vimModeEnabled = enabled;
+    void settingsService.saveVimMode(enabled);
   };
 
   // Per-note, toggled via Alt+R - not gated on isLockedActive, since this is
@@ -780,6 +792,7 @@
       lightPaletteId = settings.lightPaletteId;
       darkPaletteId = settings.darkPaletteId;
       dismissedUpdateVersion = settings.dismissedUpdateVersion;
+      vimModeEnabled = settings.vimMode;
       document.documentElement.dataset.theme = theme;
       applyActivePalette();
     } catch (err) {
@@ -961,6 +974,7 @@
           onOpenLink={openLink}
           placeholder="Start typing instantly..."
           editable={!isLockedActive}
+          vimMode={vimModeEnabled}
         />
       {:else}
         <PlainTextEditor
@@ -971,6 +985,7 @@
           placeholder="Start typing instantly..."
           editable={!isLockedActive}
           showLineNumbers={showLineNumbersActive}
+          vimMode={vimModeEnabled}
         />
       {/if}
     </div>
@@ -1007,6 +1022,8 @@
     {darkPaletteId}
     onLightPaletteChange={setLightPalette}
     onDarkPaletteChange={setDarkPalette}
+    vimMode={vimModeEnabled}
+    onVimModeChange={setVimMode}
     onCheckForUpdate={checkForUpdateManually}
     onImportFromFolder={importFromFolder}
     onClose={() => {

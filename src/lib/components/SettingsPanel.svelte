@@ -16,6 +16,8 @@
   export let darkPaletteId: string;
   export let onLightPaletteChange: (id: string) => void;
   export let onDarkPaletteChange: (id: string) => void;
+  export let vimMode: boolean;
+  export let onVimModeChange: (enabled: boolean) => void;
   export let onClose: () => void;
   export let onSwitchDatabase: (id: number) => Promise<void>;
   export let onRequestConfirm: (message: string) => Promise<boolean>;
@@ -455,6 +457,15 @@
               </div>
             </div>
             <p class="hint">The app switches between these automatically with the light/dark toggle.</p>
+          </section>
+
+          <section class="card">
+            <span class="section-title">Editor</span>
+            <label class="row">
+              <span>Vim mode</span>
+              <input type="checkbox" checked={vimMode} on:change={(e) => onVimModeChange(e.currentTarget.checked)} />
+            </label>
+            <p class="hint">Modal editing with vim motions - applies to plain-text notes only.</p>
           </section>
 
           <section class="card">

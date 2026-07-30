@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { Editor } from '@tiptap/core';
+  import { Editor, Extension } from '@tiptap/core';
+  import { Plugin, TextSelection } from '@tiptap/pm/state';
+  import type { EditorView } from '@tiptap/pm/view';
   import StarterKit from '@tiptap/starter-kit';
   import TiptapLink from '@tiptap/extension-link';
   import TiptapImage from '@tiptap/extension-image';
@@ -12,6 +14,7 @@
   import { isAllowedLinkUrl } from '../utils/links';
   import { isAllowedImageMimeType, isAllowedImagePath } from '../utils/images';
   import { readDroppedImage } from '../services/imagesService';
+  import { vimModeIndicator } from '../stores/vimModeIndicator';
 
   const isTauriRuntime = () => typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 
@@ -26,6 +29,7 @@
   export let onOpenLink: (url: string) => void;
   export let placeholder = '';
   export let editable = true;
+  export let vimMode = false;
 
   let element: HTMLDivElement;
   let editor: Editor | undefined;
@@ -90,6 +94,187 @@
           parse: {},
         },
       };
+    },
+  });
+
+  // Minimal vim-lite modal editing for Markdown notes - deliberately NOT
+  // the full vim feature set (no word motions, text objects, registers,
+  // counts, dot-repeat, or search - see PlainTextEditor.svelte's
+  // CodeMirror-based vim mode for that, which has a mature library behind
+  // it). This is just enough for movement + starting a new line without
+  // reaching for the mouse: normal/insert modes, hjkl, 0/$, i/o/O, x, dd.
+  // Only i and o/O enter insert mode - no `a`/`A`/`I` etc. (a deliberate
+  // trim from the fuller set a real vim would have, to keep the mode
+  // switches predictable). Hand-rolled as a small ProseMirror plugin (via
+  // a Tiptap Extension)
+  // since nothing at this scale exists as a library for ProseMirror -
+  // imports come from @tiptap/pm/* (Tiptap's own bundled ProseMirror
+  // re-export) rather than a separate prosemirror-* package, so they're
+  // guaranteed to be the exact classes Tiptap's editor instance uses.
+  let vimNormalMode = true;
+  let pendingDeleteBlock = false;
+  let pendingDeleteBlockTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const enterInsertMode = () => {
+    vimNormalMode = false;
+  };
+
+  const enterNormalMode = () => {
+    vimNormalMode = true;
+    pendingDeleteBlock = false;
+  };
+
+  const moveChar = (view: EditorView, dir: 1 | -1) => {
+    const { doc, selection } = view.state;
+    const pos = Math.max(0, Math.min(doc.content.size, selection.from + dir));
+    view.dispatch(view.state.tr.setSelection(TextSelection.near(doc.resolve(pos), dir)));
+  };
+
+  // "Line" here means the current block (paragraph/heading/list item), same
+  // as moveToBlockEdge below - j/k move to the next/previous block rather
+  // than a wrapped screen line. (An earlier version used
+  // coordsAtPos/posAtCoords to find a screen line above/below, but the
+  // margin between blocks made the small pixel nudge unreliable - it often
+  // resolved back inside the *same* block, so j/k effectively did nothing.
+  // This structural approach, matching moveToBlockEdge, is exact instead of
+  // approximate.)
+  const moveBlock = (view: EditorView, dir: 1 | -1) => {
+    const { doc } = view.state;
+    const $pos = view.state.selection.$from;
+    const depth = $pos.depth;
+    const raw = dir > 0 ? $pos.after(depth) + 1 : $pos.before(depth) - 1;
+    const pos = Math.max(0, Math.min(doc.content.size, raw));
+    view.dispatch(view.state.tr.setSelection(TextSelection.near(doc.resolve(pos), dir)));
+  };
+
+  // "Line" here means the current block (paragraph/heading/list item) -
+  // there's no plain-text-style single line to jump to in a rich doc.
+  const moveToBlockEdge = (view: EditorView, edge: 'start' | 'end') => {
+    const $pos = view.state.selection.$from;
+    const pos = edge === 'start' ? $pos.start() : $pos.end();
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, pos)));
+  };
+
+  // Splits the current block at its start/end so a new one opens above/
+  // below, landing the cursor inside the new (empty) one - handles the
+  // common cases (paragraphs, list items) via ProseMirror's own
+  // schema-aware Transaction.split, but isn't a full replacement for
+  // Tiptap's specialized Enter-key command chain (e.g. exiting an empty
+  // list item); Enter itself is untouched and still available.
+  const openBlock = (view: EditorView, where: 'below' | 'above') => {
+    const $pos = view.state.selection.$from;
+    const splitAt = where === 'below' ? $pos.end() : $pos.start();
+    const bias = where === 'below' ? 1 : -1;
+    const tr = view.state.tr;
+    tr.split(splitAt);
+    const mapped = tr.mapping.map(splitAt, bias);
+    tr.setSelection(TextSelection.near(tr.doc.resolve(mapped), bias));
+    view.dispatch(tr);
+    enterInsertMode();
+  };
+
+  const deleteCharForward = (view: EditorView) => {
+    const { from } = view.state.selection;
+    if (from >= view.state.doc.content.size) return;
+    view.dispatch(view.state.tr.delete(from, from + 1));
+  };
+
+  const deleteCurrentBlock = (view: EditorView) => {
+    const $pos = view.state.selection.$from;
+    const start = $pos.before($pos.depth);
+    const end = $pos.after($pos.depth);
+    const tr = view.state.tr;
+    if (view.state.doc.childCount <= 1) {
+      // Removing the only remaining block would leave an invalid empty
+      // document - clear its content instead.
+      tr.delete(start + 1, end - 1);
+    } else {
+      tr.delete(start, end);
+    }
+    view.dispatch(tr);
+  };
+
+  const VimLite = Extension.create({
+    name: 'vimLite',
+    addProseMirrorPlugins() {
+      return [
+        new Plugin({
+          props: {
+            handleKeyDown: (view, event) => {
+              if (!vimMode || !editable) return false;
+              if (!vimNormalMode) {
+                if (event.key === 'Escape') {
+                  enterNormalMode();
+                  return true;
+                }
+                return false;
+              }
+              // Leave app/Tiptap modifier shortcuts (Alt+..., Cmd+B, etc.)
+              // alone - vim-lite only claims plain, unmodified keys.
+              if (event.ctrlKey || event.metaKey || event.altKey) return false;
+              if (pendingDeleteBlock) {
+                clearTimeout(pendingDeleteBlockTimer);
+                pendingDeleteBlock = false;
+                if (event.key === 'd') {
+                  deleteCurrentBlock(view);
+                  return true;
+                }
+                // Any other key just cancels the pending "d" (no generic
+                // operator+motion composition) - fall through and handle
+                // this key normally below.
+              }
+              switch (event.key) {
+                case 'h':
+                  moveChar(view, -1);
+                  return true;
+                case 'l':
+                  moveChar(view, 1);
+                  return true;
+                case 'j':
+                  moveBlock(view, 1);
+                  return true;
+                case 'k':
+                  moveBlock(view, -1);
+                  return true;
+                case '0':
+                  moveToBlockEdge(view, 'start');
+                  return true;
+                case '$':
+                  moveToBlockEdge(view, 'end');
+                  return true;
+                case 'i':
+                  enterInsertMode();
+                  return true;
+                case 'o':
+                  openBlock(view, 'below');
+                  return true;
+                case 'O':
+                  openBlock(view, 'above');
+                  return true;
+                case 'x':
+                  deleteCharForward(view);
+                  return true;
+                case 'd':
+                  pendingDeleteBlock = true;
+                  pendingDeleteBlockTimer = setTimeout(() => {
+                    pendingDeleteBlock = false;
+                  }, 600);
+                  return true;
+                case 'Escape':
+                  // Already in normal mode - no-op, but still fully
+                  // swallowed (see stopEscapeWhileVimActive below for why).
+                  return true;
+                default:
+                  // Swallow any other plain printable key so normal mode
+                  // never leaks stray text into the document; navigation/
+                  // editing keys we don't special-case (arrows, Backspace,
+                  // Enter, Tab, Home/End, ...) are left alone.
+                  return event.key.length === 1;
+              }
+            },
+          },
+        }),
+      ];
     },
   });
 
@@ -290,11 +475,24 @@
   // (the DOM 'drop' listener below) instead.
   let unlistenDragDrop: (() => void) | undefined;
 
+  // Vim-lite's own Escape (leave insert mode) must not bubble to
+  // App.svelte's global window keydown handler, which hides the whole app
+  // window on a bare Escape when no dialog is open - same fix as
+  // PlainTextEditor.svelte's vim mode. Attached to `element` (an ancestor
+  // of the actual contenteditable ProseMirror renders into), so it runs
+  // after ProseMirror's own handling but before the event can bubble any
+  // further. Only active while vim mode is on and the note is editable -
+  // Escape keeps bubbling (today's behavior) otherwise.
+  const stopEscapeWhileVimActive = (event: KeyboardEvent) => {
+    if (vimMode && editable && event.key === 'Escape') event.stopPropagation();
+  };
+
   onMount(() => {
     element.addEventListener('click', handleLinkClick, true);
     element.addEventListener('change', handleTaskCheckboxChange);
     element.addEventListener('paste', handleImagePaste, true);
     element.addEventListener('drop', handleImageDrop, true);
+    element.addEventListener('keydown', stopEscapeWhileVimActive);
 
     if (isTauriRuntime()) {
       void getCurrentWebviewWindow()
@@ -313,6 +511,10 @@
       element,
       editable,
       extensions: [
+        // Listed first so its handleKeyDown gets first crack at every key -
+        // same precedence requirement as the plain-text editor's "vim must
+        // come before other keymaps".
+        VimLite,
         // link: false - StarterKit bundles its own Link instance under the
         // same "link" mark name, which would otherwise collide with the
         // configured one below.
@@ -387,16 +589,28 @@
   $: if (editor && noteId !== lastNoteId) {
     editor.commands.setContent(content, false);
     lastNoteId = noteId;
+    // Vim buffers always start in normal mode.
+    enterNormalMode();
   }
 
   $: editor?.setEditable(editable);
+
+  // Single source of truth for the footer badge - reacts to the mode
+  // switching (vimNormalMode), the setting toggling, and the note's
+  // editable/locked state, so none of those call sites need to touch the
+  // store directly. Only one of MarkdownEditor/PlainTextEditor is ever
+  // mounted at a time, so there's no cross-editor contention over it.
+  $: vimModeIndicator.set(editor && vimMode && editable ? (vimNormalMode ? 'NORMAL' : 'INSERT') : null);
 
   onDestroy(() => {
     element.removeEventListener('click', handleLinkClick, true);
     element.removeEventListener('change', handleTaskCheckboxChange);
     element.removeEventListener('paste', handleImagePaste, true);
     element.removeEventListener('drop', handleImageDrop, true);
+    element.removeEventListener('keydown', stopEscapeWhileVimActive);
     unlistenDragDrop?.();
+    vimModeIndicator.set(null);
+    clearTimeout(pendingDeleteBlockTimer);
     editor?.destroy();
   });
 </script>
