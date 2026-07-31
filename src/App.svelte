@@ -575,6 +575,13 @@
     const vimDown = vimModeEnabled && !inSearchInput && event.key === 'j';
     const vimUp = vimModeEnabled && !inSearchInput && event.key === 'k';
 
+    // Alt+arrow is claimed globally (see handleKeydown) for reordering/
+    // indenting notes - without this guard, a tree row with real keyboard
+    // focus would ALSO move the tree's focus cursor or toggle expand/
+    // collapse on top of that, since none of the branches below otherwise
+    // check for Alt.
+    if (event.altKey) return;
+
     if (event.key === 'ArrowDown' || vimDown) {
       event.preventDefault();
       const next = visibleFlat[Math.min(currentIndex + 1, visibleFlat.length - 1)];
@@ -741,6 +748,28 @@
   };
 
   const handleKeydown = (event: KeyboardEvent) => {
+    // Reordering (Alt+ArrowUp/Down): deliberately allowed to repeat while
+    // held, like holding a plain arrow key to move through a list, so
+    // checked before the single-fire guard below rather than through it.
+    // Keyboard equivalent of dragging a row - works identically on every
+    // platform, unlike HTML5 drag-and-drop (see tauri.windows.conf.json).
+    if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+      event.preventDefault();
+      if ($selectedId != null) void notesStore.moveNoteOrder($selectedId, event.key === 'ArrowUp' ? -1 : 1);
+      return;
+    }
+
+    // Nesting (Alt+ArrowLeft/ArrowRight): same repeat-while-held treatment
+    // as reordering above - right/"indent" nests under the previous
+    // sibling, left/"outdent" promotes to the parent's level.
+    if (event.altKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+      event.preventDefault();
+      if ($selectedId != null) {
+        void (event.key === 'ArrowRight' ? notesStore.indentNote($selectedId) : notesStore.outdentNote($selectedId));
+      }
+      return;
+    }
+
     // Every shortcut here is a single, discrete action (create a note,
     // delete a note, insert a timestamp, ...) - none of them should repeat
     // just because a key was held a moment too long.

@@ -9,7 +9,7 @@ jot something down in a tree of notes, and hide it again.
 - **Summon from anywhere** — press a global hotkey (default `Alt+S`,
   configurable in settings) to show/hide the window instantly.
 - **Tree-structured notes** — create, rename, delete, duplicate, and move
-  notes and subnotes.
+  notes and subnotes, by drag-and-drop or with `Alt+↑`/`Alt+↓`.
 - **Markdown editor** — rich text editing powered by Tiptap, with markdown
   shortcuts for headings and formatting. Links open in your default browser
   (Ctrl+Click, a plain click on a locked note, right-click, or Alt+O). Paste
@@ -51,6 +51,9 @@ jot something down in a tree of notes, and hide it again.
 | `Alt+D` | Delete the current note (and its subnotes) |
 | `Alt+M` | Toggle Markdown view |
 | `Alt+R` | Toggle line numbers (plain text notes) |
+| `Alt+↑` / `Alt+↓` | Move the current note up/down among its siblings |
+| `Alt+→` | Nest the current note under its previous sibling |
+| `Alt+←` | Move the current note out to its parent's level |
 | `Alt+O` | Open the link under the caret (Markdown view) |
 | `Alt+B` | Switch to the next database |
 | `Alt+1` | Insert a divider line |

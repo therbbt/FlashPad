@@ -236,6 +236,9 @@ export async function createWelcomeNote(hotkeyLabel: string): Promise<NoteRecord
     '- **Alt+D** - Delete the current note (and its subnotes)',
     '- **Alt+M** - Toggle Markdown view',
     '- **Alt+R** - Toggle line numbers (plain text notes)',
+    '- **Alt+↑ / Alt+↓** - Move the current note up/down among its siblings',
+    '- **Alt+→** - Nest the current note under its previous sibling',
+    "- **Alt+←** - Move the current note out to its parent's level",
     '- **Alt+O** - Open the link under the caret (Markdown view)',
     '- **Alt+B** - Switch to the next database',
     '- **Alt+T** - Toggle focus between the editor and the notes menu',
@@ -329,6 +332,85 @@ export async function handleTreeDrop(draggedId: number, targetId: number, zone: 
     status.set('Reordered');
   } catch (err) {
     status.set(err instanceof Error ? err.message : 'Reorder failed');
+  }
+}
+
+// Keyboard alternative to dragging a row (Alt+ArrowUp/ArrowDown) - swaps a
+// note with its immediately preceding/following sibling. Works identically
+// on every platform, unlike HTML5 drag-and-drop (which Tauri's native
+// drag-drop handling breaks on Windows unless disabled - see
+// src-tauri/tauri.windows.conf.json).
+export async function moveNoteOrder(id: number, direction: -1 | 1): Promise<void> {
+  const noteList = get(notes);
+  const note = noteList.find((n) => n.id === id);
+  if (!note) return;
+  const siblings = noteList.filter((n) => n.parentId === note.parentId).sort((a, b) => a.sortOrder - b.sortOrder);
+  const index = siblings.findIndex((n) => n.id === id);
+  const targetIndex = index + direction;
+  if (index === -1 || targetIndex < 0 || targetIndex >= siblings.length) return;
+
+  const beforeId = direction < 0 ? siblings[targetIndex].id : (siblings[targetIndex + 1]?.id ?? null);
+
+  try {
+    await notesService.reorder(id, note.parentId, beforeId);
+    await refreshNotes();
+    status.set('Reordered');
+  } catch (err) {
+    status.set(err instanceof Error ? err.message : 'Reorder failed');
+  }
+}
+
+// Keyboard alternative to dragging a row onto/out of a note (Alt+ArrowLeft/
+// ArrowRight) - complements moveNoteOrder (Alt+ArrowUp/Down, which only
+// reorders among the current siblings) by changing nesting level, the same
+// indent/outdent convention most outliners use.
+
+// Nests the note under its immediately preceding sibling, as that
+// sibling's new last child - a no-op if it's already the first among its
+// siblings (nothing above it to nest under).
+export async function indentNote(id: number): Promise<void> {
+  const noteList = get(notes);
+  const note = noteList.find((n) => n.id === id);
+  if (!note) return;
+  const siblings = noteList.filter((n) => n.parentId === note.parentId).sort((a, b) => a.sortOrder - b.sortOrder);
+  const index = siblings.findIndex((n) => n.id === id);
+  if (index <= 0) return;
+  const newParent = siblings[index - 1];
+
+  try {
+    await notesService.reorder(id, newParent.id, null);
+    // The note would otherwise vanish from view if its new parent is
+    // currently collapsed.
+    expandedNotes.update((set) => (set.has(newParent.id) ? set : new Set(set).add(newParent.id)));
+    if (get(selectedId) === id) activeParentId.set(newParent.id);
+    await refreshNotes();
+    status.set('Moved in');
+  } catch (err) {
+    status.set(err instanceof Error ? err.message : 'Move failed');
+  }
+}
+
+// Promotes the note to be its parent's own next sibling (one level up,
+// positioned right after the former parent) - a no-op if it's already at
+// the root.
+export async function outdentNote(id: number): Promise<void> {
+  const noteList = get(notes);
+  const note = noteList.find((n) => n.id === id);
+  if (!note || note.parentId == null) return;
+  const parent = noteList.find((n) => n.id === note.parentId);
+  if (!parent) return;
+  const grandparentId = parent.parentId;
+  const grandSiblings = noteList.filter((n) => n.parentId === grandparentId).sort((a, b) => a.sortOrder - b.sortOrder);
+  const parentIndex = grandSiblings.findIndex((n) => n.id === parent.id);
+  const beforeId = grandSiblings[parentIndex + 1]?.id ?? null;
+
+  try {
+    await notesService.reorder(id, grandparentId, beforeId);
+    if (get(selectedId) === id) activeParentId.set(grandparentId);
+    await refreshNotes();
+    status.set('Moved out');
+  } catch (err) {
+    status.set(err instanceof Error ? err.message : 'Move failed');
   }
 }
 

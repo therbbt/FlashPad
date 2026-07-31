@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "FlashPad",
+        "width": 760,
+        "height": 580,
+        "resizable": true,
+        "transparent": true,
+        "decorations": false,
+        "visible": false,
+        "focus": true,
+        "dragDropEnabled": false
+      }
+    ]
+  }
+}

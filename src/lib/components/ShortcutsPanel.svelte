@@ -20,6 +20,9 @@
         ['Alt+D', 'Delete the current note (and its subnotes)'],
         ['Alt+M', 'Toggle Markdown view'],
         ['Alt+R', 'Toggle line numbers (plain text notes)'],
+        ['Alt+↑ / Alt+↓', 'Move the current note up/down among its siblings'],
+        ['Alt+→', 'Nest the current note under its previous sibling'],
+        ['Alt+←', "Move the current note out to its parent's level"],
       ] as [string, string][],
     },
     {
