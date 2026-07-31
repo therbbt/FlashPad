@@ -99,6 +99,7 @@
   let isLockedActive = false;
   let showLineNumbersActive = false;
   let vimModeEnabled = false;
+  let dateTimeNoteNamesEnabled = true;
   let markdownEditorRef: MarkdownEditor | undefined;
   let plainEditorRef: PlainTextEditor | undefined;
   let treeEl: HTMLDivElement;
@@ -209,6 +210,9 @@
     isMarkdownActive = note.isMarkdown;
     isLockedActive = note.isLocked;
     showLineNumbersActive = note.showLineNumbers;
+    // Date/time-named notes (see createNoteIn) are NOT auto-derived from
+    // typed content - only a truly untitled note is, so the timestamp name
+    // sticks around as a stable identifier unless renamed manually.
     titleAutoDerive = note.title === 'Untitled' || note.title.trim() === '';
     // Plain-text undo history is per-note - PlainTextEditor resets its own
     // stacks internally when its noteId prop changes, so there's nothing to
@@ -385,7 +389,8 @@
   // ---------- creation ----------
 
   const createNoteIn = async (parentId: number | null) => {
-    selectNote(await notesStore.createNoteIn(parentId));
+    const defaultTitle = dateTimeNoteNamesEnabled ? formatLocalTimestamp(new Date()) : 'Untitled';
+    selectNote(await notesStore.createNoteIn(parentId, defaultTitle));
   };
 
   // Triggered from Settings, which shows its own inline "Importing…"/result
@@ -638,6 +643,11 @@
     void settingsService.saveVimMode(enabled);
   };
 
+  const setDateTimeNoteNames = (enabled: boolean) => {
+    dateTimeNoteNamesEnabled = enabled;
+    void settingsService.saveDateTimeNoteNames(enabled);
+  };
+
   // Per-note, toggled via Alt+R - not gated on isLockedActive, since this is
   // a display preference rather than an edit to the note's protected text
   // (and update_note's lock guard only rejects title/content changes
@@ -713,7 +723,30 @@
     };
   };
 
+  // Tracks physically-held keys ourselves (by event.code) rather than
+  // trusting KeyboardEvent.repeat - WebKitGTK (the webview Tauri uses on
+  // Linux) doesn't reliably set it, so relying on it alone still let a
+  // held Alt+N (etc.) fire the shortcut multiple times. Cleared on keyup,
+  // and defensively on blur too, in case a keyup is ever missed (e.g. the
+  // window loses focus mid-press) - otherwise that key would look "stuck
+  // held" and its shortcut would never fire again until reload.
+  const heldKeyCodes = new Set<string>();
+
+  const handleKeyup = (event: KeyboardEvent) => {
+    heldKeyCodes.delete(event.code);
+  };
+
+  const handleWindowBlur = () => {
+    heldKeyCodes.clear();
+  };
+
   const handleKeydown = (event: KeyboardEvent) => {
+    // Every shortcut here is a single, discrete action (create a note,
+    // delete a note, insert a timestamp, ...) - none of them should repeat
+    // just because a key was held a moment too long.
+    if (heldKeyCodes.has(event.code)) return;
+    heldKeyCodes.add(event.code);
+
     if (event.altKey && event.key === '1') {
       event.preventDefault();
       insertNewline();
@@ -793,6 +826,7 @@
       darkPaletteId = settings.darkPaletteId;
       dismissedUpdateVersion = settings.dismissedUpdateVersion;
       vimModeEnabled = settings.vimMode;
+      dateTimeNoteNamesEnabled = settings.dateTimeNoteNames;
       document.documentElement.dataset.theme = theme;
       applyActivePalette();
     } catch (err) {
@@ -835,8 +869,12 @@
     void checkForAppUpdate();
 
     window.addEventListener('keydown', handleKeydown);
+    window.addEventListener('keyup', handleKeyup);
+    window.addEventListener('blur', handleWindowBlur);
     return () => {
       window.removeEventListener('keydown', handleKeydown);
+      window.removeEventListener('keyup', handleKeyup);
+      window.removeEventListener('blur', handleWindowBlur);
     };
   });
 </script>
@@ -1024,6 +1062,8 @@
     onDarkPaletteChange={setDarkPalette}
     vimMode={vimModeEnabled}
     onVimModeChange={setVimMode}
+    dateTimeNoteNames={dateTimeNoteNamesEnabled}
+    onDateTimeNoteNamesChange={setDateTimeNoteNames}
     onCheckForUpdate={checkForUpdateManually}
     onImportFromFolder={importFromFolder}
     onClose={() => {

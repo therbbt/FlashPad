@@ -166,8 +166,8 @@ export function collapseAll(): void {
 
 // ---------- creation ----------
 
-export async function createNoteIn(parentId: number | null): Promise<NoteRecord> {
-  const created = await notesService.create({ title: 'Untitled', content: '', parentId });
+export async function createNoteIn(parentId: number | null, defaultTitle = 'Untitled'): Promise<NoteRecord> {
+  const created = await notesService.create({ title: defaultTitle, content: '', parentId });
   notes.update((list) => [created, ...list]);
   if (parentId != null) {
     expandedNotes.update((set) => (set.has(parentId) ? set : new Set(set).add(parentId)));
@@ -224,6 +224,10 @@ export async function createWelcomeNote(hotkeyLabel: string): Promise<NoteRecord
     '## Search',
     '',
     'Use the search box at the bottom to find notes, with prev/next buttons (or **Enter** / **Shift+Enter**) to step through matches.',
+    '',
+    '## Vim mode',
+    '',
+    "Turn on **Vim mode** in Settings for modal editing - off by default. Plain text notes get full vim motions, operators, and search. Markdown notes get a smaller set (normal/insert modes, **h j k l**, **0**/**$**, **i**/**o**/**O**, **x**, **dd**). The sidebar also supports **j**/**k** to move focus when it's on. The current mode shows in the footer.",
     '',
     '## Shortcuts',
     '',

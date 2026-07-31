@@ -20,6 +20,14 @@ jot something down in a tree of notes, and hide it again.
 - **Note locking** — protect a note from accidental edits.
 - **Line numbers** — optional per-note gutter for plain text notes, toggled
   with `Alt+R`. Off by default.
+- **Vim mode** — optional modal editing, toggled in Settings → Editor. Off by
+  default. Plain text notes get full vim emulation (motions, operators, text
+  objects, registers, counts, dot-repeat, `/` search) via CodeMirror 6 and
+  `@replit/codemirror-vim`. Markdown notes get a small hand-rolled subset -
+  normal/insert modes, `h`/`j`/`k`/`l`, `0`/`$`, `i`/`o`/`O`, `x`, `dd` - since
+  no vim-emulation library exists for the rich-text editor. The sidebar also
+  supports `j`/`k` to move focus up/down when vim mode is on. The current
+  mode (NORMAL/INSERT/etc.) shows in the footer.
 - **Themeable** — light/dark mode, each with its own independently
   selectable color palette (FlashPad's own light/dark looks, or Catppuccin
   Latte/Frappé/Macchiato/Mocha).
@@ -50,7 +58,7 @@ jot something down in a tree of notes, and hide it again.
 | `Alt+3` | Insert a dateline |
 | `Alt+T` | Toggle focus between the editor and the notes menu |
 | `Enter` | Open the focused note, toggling its subnotes if it has any |
-| `↑` / `↓` | Move through the tree or search results |
+| `↑` / `↓` (or `j` / `k` with vim mode on) | Move through the tree or search results |
 | `←` / `→` | Collapse / expand the focused note's subnotes |
 | Right-click a note | New subnote, rename, duplicate, move, lock, delete |
 | Right-click the text | Copy, cut, or paste the note; lock / unlock |
@@ -61,6 +69,7 @@ jot something down in a tree of notes, and hide it again.
 - [Tauri 2](https://tauri.app/) (Rust) for the desktop shell
 - [Svelte 5](https://svelte.dev/) + [Vite](https://vitejs.dev/) + TypeScript for the frontend
 - [Tiptap](https://tiptap.dev/) for markdown editing
+- [CodeMirror 6](https://codemirror.net/) + [`@replit/codemirror-vim`](https://github.com/replit/codemirror-vim) for the plain text editor and its vim mode
 - Tauri plugins: `autostart`, `global-shortcut`, `window-state`, `dialog`, `updater`, `process`, `clipboard-manager`, `opener`
 
 ## Getting Started
@@ -91,4 +100,5 @@ npm run tauri build
 - `src/` — Svelte frontend
   - `src/lib/components/` — UI components (notes tree, editor, panels, etc.)
   - `src/lib/services/` — app services (notes, settings, hotkeys, database, autostart)
+  - `src/lib/stores/` — shared Svelte stores (notes/tree state, database/search state, status bar, vim mode indicator)
 - `src-tauri/` — Rust/Tauri backend and app configuration
