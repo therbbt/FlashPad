@@ -26,6 +26,7 @@
   import { writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { isAllowedLinkUrl } from './lib/utils/links';
+  import { toCrlfNewlines, prefersCrlfClipboard } from './lib/utils/clipboard';
   import {
     notes,
     selectedId,
@@ -843,6 +844,30 @@
     }
   };
 
+  // Both editors write their own text/plain flavor from a copy/cut handler
+  // (CodeMirror's copiedRange, ProseMirror's serializeForClipboard) and both
+  // join lines with a bare LF. Blink's LF-to-CRLF conversion on Windows only
+  // covers text IT puts on the clipboard, not text an editor set on the
+  // event's DataTransfer, so multi-line text copied out of FlashPad lands in
+  // Win32 edit controls (Notepad, FlashNote, most Oracle Forms fields) as a
+  // single run-together line.
+  //
+  // Handled here on window rather than inside each editor: window is the
+  // last stop in the bubble phase, so whatever the focused editor put on the
+  // DataTransfer is already there to be rewritten, and the fix covers any
+  // future copy source for free. The DataTransfer is still writable this
+  // late in the dispatch. An empty text/plain means nothing intercepted the
+  // event and the browser will populate the clipboard itself afterwards -
+  // that path already converts, so leave it alone rather than hijacking it.
+  const normalizeCopiedNewlines = (event: ClipboardEvent) => {
+    if (!prefersCrlfClipboard()) return;
+    const data = event.clipboardData;
+    const text = data?.getData('text/plain');
+    if (!data || !text) return;
+    const crlf = toCrlfNewlines(text);
+    if (crlf !== text) data.setData('text/plain', crlf);
+  };
+
   onMount(async () => {
     try {
       // Loaded and applied ahead of databaseService.init() below,
@@ -900,10 +925,14 @@
     window.addEventListener('keydown', handleKeydown);
     window.addEventListener('keyup', handleKeyup);
     window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('copy', normalizeCopiedNewlines);
+    window.addEventListener('cut', normalizeCopiedNewlines);
     return () => {
       window.removeEventListener('keydown', handleKeydown);
       window.removeEventListener('keyup', handleKeyup);
       window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('copy', normalizeCopiedNewlines);
+      window.removeEventListener('cut', normalizeCopiedNewlines);
     };
   });
 </script>

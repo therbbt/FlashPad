@@ -15,6 +15,7 @@
   import { defaultKeymap, historyKeymap, history } from '@codemirror/commands';
   import { vim, getCM } from '@replit/codemirror-vim';
   import { vimModeIndicator } from '../stores/vimModeIndicator';
+  import { toLfNewlines } from '../utils/clipboard';
 
   export let content: string;
   export let noteId: number;
@@ -47,8 +48,17 @@
   // page's DOM structure, which bakes in each source element's indentation
   // as literal leading spaces/tabs on every line - strip those per line so
   // pasted lines start flush left, matching what plain notes expect.
+  //
+  // CRLF must be folded to LF *before* any of that, and before the inserted
+  // text's length is used below: CM6 splits the inserted string on
+  // /\r\n?|\n/ and stores lines without the separator, so every \r vanishes
+  // from the document while still counting towards `text.length`. The
+  // resulting cursor anchor then points past the end of the document, which
+  // makes the whole dispatch throw - and since the paste event was already
+  // preventDefault-ed, a multi-line paste from a Windows app (which puts
+  // CRLF on the clipboard) would silently do nothing at all.
   const cleanPastedText = (raw: string) =>
-    raw
+    toLfNewlines(raw)
       .split('\n')
       .map((line) => line.replace(/^[ \t]+/, ''))
       .join('\n');
@@ -224,8 +234,10 @@
     view?.focus();
   }
 
-  export function insertAtCursor(text: string) {
+  export function insertAtCursor(raw: string) {
     if (!view) return;
+    // Same CRLF-vs-anchor hazard as cleanPastedText above.
+    const text = toLfNewlines(raw);
     const { from, to } = view.state.selection.main;
     view.dispatch({
       changes: { from, to, insert: text },
