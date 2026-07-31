@@ -18,6 +18,8 @@
   export let onDarkPaletteChange: (id: string) => void;
   export let vimMode: boolean;
   export let onVimModeChange: (enabled: boolean) => void;
+  export let dateTimeNoteNames: boolean;
+  export let onDateTimeNoteNamesChange: (enabled: boolean) => void;
   export let onClose: () => void;
   export let onSwitchDatabase: (id: number) => Promise<void>;
   export let onRequestConfirm: (message: string) => Promise<boolean>;
@@ -466,6 +468,23 @@
               <input type="checkbox" checked={vimMode} on:change={(e) => onVimModeChange(e.currentTarget.checked)} />
             </label>
             <p class="hint">Modal editing with vim motions - applies to plain-text notes only.</p>
+          </section>
+
+          <section class="card">
+            <span class="section-title">Notes</span>
+            <label class="row">
+              <span>Name new notes with date and time</span>
+              <input
+                type="checkbox"
+                checked={dateTimeNoteNames}
+                on:change={(e) => onDateTimeNoteNamesChange(e.currentTarget.checked)}
+              />
+            </label>
+            <p class="hint">
+              New notes are named with when they were created instead of "Untitled" - that name sticks even once you
+              start typing. Turn this off to keep new notes as "Untitled" until you rename them, which does get
+              replaced by what you type.
+            </p>
           </section>
 
           <section class="card">

@@ -12,6 +12,10 @@ export interface FlashPadSettings {
   // non-vim users are never surprised by modal behavior - only applies to
   // PlainTextEditor, not the Markdown/rich-text editor.
   vimMode: boolean;
+  // New notes are titled with their creation date/time instead of
+  // "Untitled". On by default; "Untitled" is the fallback when this is
+  // turned off (matching the app's original behavior).
+  dateTimeNoteNames: boolean;
 }
 
 const STORAGE_KEY = 'flashpad.settings';
@@ -22,6 +26,7 @@ const DEFAULTS: FlashPadSettings = {
   darkPaletteId: DEFAULT_DARK_PALETTE_ID,
   dismissedUpdateVersion: null,
   vimMode: false,
+  dateTimeNoteNames: true,
 };
 
 export class SettingsService {
@@ -37,6 +42,7 @@ export class SettingsService {
       darkPaletteId: parsed.darkPaletteId ?? DEFAULTS.darkPaletteId,
       dismissedUpdateVersion: parsed.dismissedUpdateVersion ?? DEFAULTS.dismissedUpdateVersion,
       vimMode: parsed.vimMode ?? DEFAULTS.vimMode,
+      dateTimeNoteNames: parsed.dateTimeNoteNames ?? DEFAULTS.dateTimeNoteNames,
     };
     return this.cached;
   }
@@ -71,5 +77,9 @@ export class SettingsService {
 
   async saveVimMode(vimMode: boolean): Promise<void> {
     await this.save({ vimMode });
+  }
+
+  async saveDateTimeNoteNames(dateTimeNoteNames: boolean): Promise<void> {
+    await this.save({ dateTimeNoteNames });
   }
 }
