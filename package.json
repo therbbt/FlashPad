@@ -1,7 +1,7 @@
 {
   "name": "flashpad",
   "private": true,
-  "version": "0.9.4",
+  "version": "0.9.5",
   "type": "module",
   "description": "Global-hotkey quick-notes desktop app",
   "author": "therbbt",
@@ -12,11 +12,11 @@
     "tauri": "tauri"
   },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
     "@tauri-apps/cli": "^2.0.0",
     "svelte": "^5.0.0",
     "typescript": "^5.6.0",
-    "vite": "^5.4.10"
+    "vite": "^8.2.0"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.4",
@@ -27,6 +27,7 @@
     "@tauri-apps/plugin-autostart": "^2.0.0",
     "@tauri-apps/plugin-clipboard-manager": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
+    "@tauri-apps/plugin-fs": "^2.5.1",
     "@tauri-apps/plugin-opener": "^2.5.4",
     "@tauri-apps/plugin-process": "^2.0.0",
     "@tauri-apps/plugin-store": "^2.0.0",

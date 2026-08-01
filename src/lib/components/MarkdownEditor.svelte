@@ -15,6 +15,7 @@
   import { isAllowedImageMimeType, isAllowedImagePath } from '../utils/images';
   import { readDroppedImage } from '../services/imagesService';
   import { vimModeIndicator } from '../stores/vimModeIndicator';
+  import type { EditorContext } from '../plugins/pluginApi';
 
   const isTauriRuntime = () => typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 
@@ -293,6 +294,73 @@
   export function getLinkHrefAtCursor(): string | null {
     if (!editor?.isActive('link')) return null;
     return (editor.getAttributes('link').href as string | undefined) ?? null;
+  }
+
+  // Appends " " + label as a link to the to-do row whose taskItem node
+  // starts at nodePos - called (possibly much) later than getContext(),
+  // e.g. after a plugin's async action finishes, so the document may have
+  // moved on. originalText guards against editing the wrong (or no
+  // longer existing) row: if the row's live text doesn't match what it
+  // was at click-time, this is a no-op.
+  function appendLinkToTaskItem(nodePos: number, originalText: string, label: string, url: string): boolean {
+    if (!editor) return false;
+    const node = editor.state.doc.nodeAt(nodePos);
+    if (!node || node.type.name !== 'taskItem') return false;
+    if (node.textBetween(0, node.content.size, ' ').trim() !== originalText) return false;
+
+    const linkMarkType = editor.schema.marks.link;
+    const paragraph = node.firstChild;
+    if (!linkMarkType || !paragraph) return false;
+
+    // +1 past the taskItem's own start tag, +1 past the paragraph's.
+    const insertPos = nodePos + 2 + paragraph.content.size;
+    const textNode = editor.schema.text(` ${label}`, [linkMarkType.create({ href: url })]);
+    editor.view.dispatch(editor.state.tr.insert(insertPos, textNode));
+    return true;
+  }
+
+  // Computed once per editor-content right-click - both for the app's own
+  // menu items (link open/copy) and for plugin
+  // contextMenu.registerEditorItem contributions (see App.svelte's
+  // openEditorMenu and pluginApi.ts). The task-item lookup reuses the same
+  // DOM-to-ProseMirror technique as handleTaskCheckboxChange below:
+  // closest('li') -> posAtDOM -> walk $pos depths for the taskItem node.
+  export function getContext(event: MouseEvent | null): EditorContext {
+    const target = event?.target as HTMLElement | null;
+    const linkHref = (target?.closest?.('a[href]') as HTMLAnchorElement | null)?.getAttribute('href') ?? null;
+
+    let taskItem: EditorContext['taskItem'] = null;
+    const listItem = target?.closest?.('li') as HTMLElement | null;
+    if (editor && listItem) {
+      try {
+        const domPos = editor.view.posAtDOM(listItem, 0);
+        const $pos = editor.state.doc.resolve(domPos);
+        for (let depth = $pos.depth; depth > 0; depth--) {
+          const candidate = $pos.node(depth);
+          if (candidate.type.name === 'taskItem') {
+            const nodePos = $pos.before(depth);
+            const text = candidate.textBetween(0, candidate.content.size, ' ').trim();
+            taskItem = {
+              text,
+              checked: Boolean(candidate.attrs.checked),
+              appendLink: (label, url) => appendLinkToTaskItem(nodePos, text, label, url),
+            };
+            break;
+          }
+        }
+      } catch {
+        // posAtDOM throws if listItem somehow isn't inside the editor's
+        // DOM - shouldn't happen given the closest() check above, but
+        // just means no task-item context either way.
+      }
+    }
+
+    const selection = editor?.state.selection;
+    const selectionText = editor && selection && selection.from !== selection.to
+      ? editor.state.doc.textBetween(selection.from, selection.to, ' ')
+      : '';
+
+    return { noteId, isMarkdown: true, taskItem, linkHref, selectionText };
   }
 
   // Handles link clicks via a real native "click" listener in the capture

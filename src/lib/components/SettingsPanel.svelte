@@ -9,6 +9,8 @@
   import { BackupService } from '../services/backupService';
   import { palettesForMode, type Palette } from '../theme/palettes';
   import DatabaseManagerSection from './DatabaseManagerSection.svelte';
+  import PluginsSection from './PluginsSection.svelte';
+  import { pluginSettingsPanels, type SettingsPanelContribution } from '../plugins/pluginApi';
 
   export let hotkey: string;
   export let onHotkeyChange: (hotkey: string) => void;
@@ -20,6 +22,9 @@
   export let onVimModeChange: (enabled: boolean) => void;
   export let dateTimeNoteNames: boolean;
   export let onDateTimeNoteNamesChange: (enabled: boolean) => void;
+  export let enabledPluginIds: string[];
+  export let onSetPluginEnabled: (id: string, enabled: boolean) => Promise<void>;
+  export let onReloadPlugins: () => Promise<void>;
   export let onClose: () => void;
   export let onSwitchDatabase: (id: number) => Promise<void>;
   export let onRequestConfirm: (message: string) => Promise<boolean>;
@@ -42,7 +47,7 @@
   // reactivation fails), so App.svelte needs the AppState itself to decide
   // whether to show the notes view or the startup-error view.
   export let onReloaded: (state: AppState) => Promise<void>;
-  export let initialTab: 'general' | 'database' = 'general';
+  export let initialTab: 'general' | 'database' | 'plugins' = 'general';
 
   const autostartService = new AutostartService();
   const hotkeyService = new HotkeyService();
@@ -50,7 +55,30 @@
   const backupService = new BackupService();
 
   let panelEl: HTMLDivElement;
-  let tab: 'general' | 'database' = initialTab;
+  let tab: string = initialTab;
+
+  // A plugin's registered panel can vanish out from under an open tab
+  // (disabled, or a "Reload plugins" that dropped it) - fall back rather
+  // than rendering a dead tab.
+  $: if (
+    tab !== 'general' &&
+    tab !== 'database' &&
+    tab !== 'plugins' &&
+    !$pluginSettingsPanels.some((panel) => panel.pluginId === tab)
+  ) {
+    tab = 'plugins';
+  }
+
+  $: activePluginPanel = $pluginSettingsPanels.find((panel) => panel.pluginId === tab) ?? null;
+
+  function mountPluginPanel(node: HTMLDivElement, panel: SettingsPanelContribution) {
+    const cleanup = panel.render(node);
+    return {
+      destroy() {
+        cleanup?.();
+      },
+    };
+  }
   let autostart = false;
   let loading = true;
   let error = '';
@@ -373,6 +401,26 @@
         </svg>
         Database
       </button>
+      <button class="tab" class:active={tab === 'plugins'} on:click={() => (tab = 'plugins')}>
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="2" width="5" height="5" rx="1" />
+          <rect x="9" y="2" width="5" height="5" rx="1" />
+          <rect x="2" y="9" width="5" height="5" rx="1" />
+          <rect x="9" y="9" width="5" height="5" rx="1" />
+        </svg>
+        Plugins
+      </button>
+      {#each $pluginSettingsPanels as panel (panel.pluginId)}
+        <button class="tab" class:active={tab === panel.pluginId} on:click={() => (tab = panel.pluginId)}>
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="2" width="5" height="5" rx="1" />
+            <rect x="9" y="2" width="5" height="5" rx="1" />
+            <rect x="2" y="9" width="5" height="5" rx="1" />
+            <rect x="9" y="9" width="5" height="5" rx="1" />
+          </svg>
+          {panel.label}
+        </button>
+      {/each}
     </nav>
 
     <div class="content">
@@ -532,7 +580,7 @@
             {/if}
           </section>
         </div>
-      {:else}
+      {:else if tab === 'database'}
         <div class="pane">
           <section class="card">
             <span class="section-title">Active database</span>
@@ -613,6 +661,26 @@
             {#if importError}
               <p class="error">{importError}</p>
             {/if}
+          </section>
+        </div>
+      {:else if tab === 'plugins'}
+        <div class="pane">
+          <section class="card">
+            <span class="section-title">Plugins</span>
+            <p class="hint">
+              Plugins run as full-trust code loaded from a local folder - only enable ones you trust. See
+              plugins/README.md in the FlashPad repo for how to build one.
+            </p>
+            <PluginsSection {enabledPluginIds} {onSetPluginEnabled} onReload={onReloadPlugins} />
+          </section>
+        </div>
+      {:else if activePluginPanel}
+        <div class="pane">
+          <section class="card">
+            <span class="section-title">{activePluginPanel.label}</span>
+            {#key activePluginPanel.pluginId}
+              <div use:mountPluginPanel={activePluginPanel}></div>
+            {/key}
           </section>
         </div>
       {/if}

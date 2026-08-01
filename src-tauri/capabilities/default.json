@@ -26,6 +26,17 @@
         { "url": "https://*" },
         { "url": "mailto:*" }
       ]
+    },
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "$APPDATA/plugins" }, { "path": "$APPDATA/plugins/**" }]
+    },
+    "fs:read-files",
+    "fs:read-dirs",
+    "fs:create-app-specific-dirs",
+    {
+      "identifier": "fs:scope",
+      "allow": ["$APPDATA/plugins", "$APPDATA/plugins/**"]
     }
   ]
 }
