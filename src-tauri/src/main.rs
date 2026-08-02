@@ -199,6 +199,7 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_fs::init())
         // Defense in depth: nothing currently constructs a link that would
         // navigate the webview itself (note links open via the opener
         // plugin's `open_url`, which launches the OS's default handler and

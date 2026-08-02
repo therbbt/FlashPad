@@ -16,6 +16,11 @@ export interface FlashPadSettings {
   // "Untitled". On by default; "Untitled" is the fallback when this is
   // turned off (matching the app's original behavior).
   dateTimeNoteNames: boolean;
+  // Plugin ids (matching their manifest's "id" field) the user has
+  // enabled - plugins are loaded from disk but only activated if listed
+  // here, off by default per plugin so installing one doesn't silently
+  // turn it on.
+  enabledPlugins: string[];
 }
 
 const STORAGE_KEY = 'flashpad.settings';
@@ -27,6 +32,7 @@ const DEFAULTS: FlashPadSettings = {
   dismissedUpdateVersion: null,
   vimMode: false,
   dateTimeNoteNames: true,
+  enabledPlugins: [],
 };
 
 export class SettingsService {
@@ -43,6 +49,7 @@ export class SettingsService {
       dismissedUpdateVersion: parsed.dismissedUpdateVersion ?? DEFAULTS.dismissedUpdateVersion,
       vimMode: parsed.vimMode ?? DEFAULTS.vimMode,
       dateTimeNoteNames: parsed.dateTimeNoteNames ?? DEFAULTS.dateTimeNoteNames,
+      enabledPlugins: parsed.enabledPlugins ?? DEFAULTS.enabledPlugins,
     };
     return this.cached;
   }
@@ -81,5 +88,9 @@ export class SettingsService {
 
   async saveDateTimeNoteNames(dateTimeNoteNames: boolean): Promise<void> {
     await this.save({ dateTimeNoteNames });
+  }
+
+  async saveEnabledPlugins(enabledPlugins: string[]): Promise<void> {
+    await this.save({ enabledPlugins });
   }
 }

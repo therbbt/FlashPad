@@ -22,6 +22,10 @@
   import ResizeHandles from './lib/components/ResizeHandles.svelte';
   import UpdateToast from './lib/components/UpdateToast.svelte';
   import UpdateDialog from './lib/components/UpdateDialog.svelte';
+  import PluginFormDialog from './lib/components/PluginFormDialog.svelte';
+  import PluginMessageDialog from './lib/components/PluginMessageDialog.svelte';
+  import { getEditorContextMenuItemsFor, activePluginForm, activePluginMessage, type EditorContext } from './lib/plugins/pluginApi';
+  import { ensurePluginsDirExists, loadEnabledPlugins } from './lib/plugins/pluginLoader';
   import { check as checkForUpdate, type Update } from '@tauri-apps/plugin-updater';
   import { writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
   import { openUrl } from '@tauri-apps/plugin-opener';
@@ -101,6 +105,7 @@
   let showLineNumbersActive = false;
   let vimModeEnabled = false;
   let dateTimeNoteNamesEnabled = true;
+  let enabledPluginIds: string[] = [];
   let markdownEditorRef: MarkdownEditor | undefined;
   let plainEditorRef: PlainTextEditor | undefined;
   let treeEl: HTMLDivElement;
@@ -516,12 +521,19 @@
   const openEditorMenu = (event: MouseEvent) => {
     if ($selectedId == null) return;
     const id = $selectedId;
-    // Links only exist in Markdown mode - closest('a[href]') naturally
-    // finds nothing in the plain textarea, but the isMarkdownActive check
-    // is kept as the source of truth rather than relying on that.
-    const linkHref = isMarkdownActive
-      ? ((event.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null)?.getAttribute('href') ?? null
-      : null;
+    // Plugins (contextMenu.registerEditorItem) get the same context object
+    // this menu itself uses for the link check below - only the Markdown
+    // editor can compute one (links/task items only exist there), so a
+    // plain-text note gets a minimal context with isMarkdown: false.
+    const pluginContext: EditorContext = isMarkdownActive && markdownEditorRef
+      ? markdownEditorRef.getContext(event)
+      : { noteId: id, isMarkdown: false, taskItem: null, linkHref: null, selectionText: '' };
+    const linkHref = pluginContext.linkHref;
+    const pluginMenuItems: ContextMenuItem[] = getEditorContextMenuItemsFor(pluginContext).map((item) => ({
+      label: item.label,
+      action: () => item.action(pluginContext),
+    }));
+
     contextMenu = {
       x: event.clientX,
       y: event.clientY,
@@ -538,6 +550,7 @@
         { label: 'Paste', disabled: $clipboard == null, action: () => void notesStore.pasteNote(id) },
         { label: '', separator: true },
         { label: isLockedActive ? 'Unlock' : 'Lock', action: () => void toggleLock(id) },
+        ...(pluginMenuItems.length ? [{ label: '', separator: true }, ...pluginMenuItems] : []),
       ],
     };
   };
@@ -654,6 +667,20 @@
   const setDateTimeNoteNames = (enabled: boolean) => {
     dateTimeNoteNamesEnabled = enabled;
     void settingsService.saveDateTimeNoteNames(enabled);
+  };
+
+  // Re-reads every enabled plugin from disk and re-activates it - clears
+  // and rebuilds all plugin contributions (see loadEnabledPlugins), so
+  // this is also how a code change to a plugin's own files takes effect
+  // without restarting FlashPad.
+  const reloadPlugins = async () => {
+    await loadEnabledPlugins(enabledPluginIds);
+  };
+
+  const setPluginEnabled = async (pluginId: string, enabled: boolean) => {
+    enabledPluginIds = enabled ? [...enabledPluginIds, pluginId] : enabledPluginIds.filter((id) => id !== pluginId);
+    await settingsService.saveEnabledPlugins(enabledPluginIds);
+    await reloadPlugins();
   };
 
   // Per-note, toggled via Alt+R - not gated on isLockedActive, since this is
@@ -836,7 +863,7 @@
     }
 
     if (event.key === 'Escape') {
-      if (contextMenu || shortcutsOpen || settingsOpen || markdownHelpOpen || confirmState || updateDetailsOpen) return;
+      if (contextMenu || shortcutsOpen || settingsOpen || markdownHelpOpen || confirmState || updateDetailsOpen || $activePluginForm || $activePluginMessage) return;
       event.preventDefault();
       void invoke('hide_window').catch(() => {
         status.set('Window hidden');
@@ -883,8 +910,15 @@
       dateTimeNoteNamesEnabled = settings.dateTimeNoteNames;
       document.documentElement.dataset.theme = theme;
       applyActivePalette();
+      enabledPluginIds = settings.enabledPlugins;
     } catch (err) {
       console.error('FlashPad failed to load settings', err);
+    }
+    try {
+      await ensurePluginsDirExists();
+      await loadEnabledPlugins(enabledPluginIds);
+    } catch (err) {
+      console.error('FlashPad failed to load plugins', err);
     }
     try {
       await databaseService.init();
@@ -1122,6 +1156,9 @@
     onVimModeChange={setVimMode}
     dateTimeNoteNames={dateTimeNoteNamesEnabled}
     onDateTimeNoteNamesChange={setDateTimeNoteNames}
+    {enabledPluginIds}
+    onSetPluginEnabled={setPluginEnabled}
+    onReloadPlugins={reloadPlugins}
     onCheckForUpdate={checkForUpdateManually}
     onImportFromFolder={importFromFolder}
     onClose={() => {
@@ -1163,6 +1200,26 @@
       confirmState?.resolve(false);
       confirmState = null;
     }}
+  />
+{/if}
+
+{#if $activePluginForm}
+  <PluginFormDialog
+    title={$activePluginForm.title}
+    fields={$activePluginForm.fields}
+    submitLabel={$activePluginForm.submitLabel}
+    onSubmit={$activePluginForm.onSubmit}
+    onClose={() => activePluginForm.set(null)}
+  />
+{/if}
+
+{#if $activePluginMessage}
+  <PluginMessageDialog
+    title={$activePluginMessage.title}
+    message={$activePluginMessage.message}
+    linkLabel={$activePluginMessage.linkLabel}
+    linkUrl={$activePluginMessage.linkUrl}
+    onClose={() => activePluginMessage.set(null)}
   />
 {/if}
 
