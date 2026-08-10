@@ -43,10 +43,9 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="title-bar" data-tauri-drag-region on:dblclick={toggleMaximize}>
   <div class="brand">
-    <svg class="brand-icon" width="22" height="22" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="24" cy="25" r="11.5" />
-      <path d="M24 13.5v4.5" />
-      <path d="M18.5 25.5l4.2 4.2 7-8.4" />
+    <svg class="brand-icon" width="14" height="14" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="24" cy="25" r="15.53" />
+      <path d="M32.78 8.13 L18.6 26.35 H24.68 L16.58 41.88" />
     </svg>
     <span class="brand-name">FlashPad</span>
   </div>
