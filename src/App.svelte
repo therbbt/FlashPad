@@ -16,6 +16,7 @@
   import Footer from './lib/components/Footer.svelte';
   import MarkdownEditor from './lib/components/MarkdownEditor.svelte';
   import PlainTextEditor from './lib/components/PlainTextEditor.svelte';
+  import EditorModeEditor from './lib/components/EditorModeEditor.svelte';
   import MarkdownHelpPanel from './lib/components/MarkdownHelpPanel.svelte';
   import ConfirmDialog from './lib/components/ConfirmDialog.svelte';
   import TitleBar from './lib/components/TitleBar.svelte';
@@ -30,6 +31,7 @@
   import { writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { isAllowedLinkUrl } from './lib/utils/links';
+  import { resolveEffectiveLanguage } from './lib/utils/languageDetect';
   import { toCrlfNewlines, prefersCrlfClipboard } from './lib/utils/clipboard';
   import {
     notes,
@@ -110,11 +112,19 @@
   let isMarkdownActive = false;
   let isLockedActive = false;
   let showLineNumbersActive = false;
+  let isEditorModeActive = false;
   let vimModeEnabled = false;
   let dateTimeNoteNamesEnabled = true;
   let enabledPluginIds: string[] = [];
   let markdownEditorRef: MarkdownEditor | undefined;
   let plainEditorRef: PlainTextEditor | undefined;
+  let editorModeEditorRef: EditorModeEditor | undefined;
+  // The single dispatch point for the three text-editing methods every
+  // editor implements the same way (focus/insertAtCursor/format) -
+  // isEditorModeActive (a per-note flag, like isMarkdownActive) overrides
+  // isMarkdownActive entirely when on, matching how the render block below
+  // picks which editor is actually mounted.
+  const activeTextEditorRef = () => (isEditorModeActive ? editorModeEditorRef : isMarkdownActive ? markdownEditorRef : plainEditorRef);
   let treeEl: HTMLDivElement;
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let toastMessage: string | null = null;
@@ -144,6 +154,8 @@
   $: searchMatchIndex = isSearching ? searchResults.findIndex((n) => n.id === $selectedId) : -1;
   $: selectedNoteCreatedAt = $notes.find((n) => n.id === $selectedId)?.createdAt ?? null;
   $: selectedNoteUpdatedAt = $notes.find((n) => n.id === $selectedId)?.updatedAt ?? null;
+  $: selectedNoteLanguage = $notes.find((n) => n.id === $selectedId)?.language ?? null;
+  $: selectedNoteEffectiveLanguage = $selectedId == null ? null : resolveEffectiveLanguage(noteText, isMarkdownActive, selectedNoteLanguage);
 
   // ---------- data loading ----------
 
@@ -158,7 +170,7 @@
     } else {
       selectNote(await notesStore.createWelcomeNote(hotkeySetting));
     }
-    requestAnimationFrame(() => (isMarkdownActive ? markdownEditorRef : plainEditorRef)?.focus());
+    requestAnimationFrame(() => activeTextEditorRef()?.focus());
   };
 
   // Resets everything scoped to the previously-active database's notes so
@@ -293,6 +305,7 @@
     isMarkdownActive = note.isMarkdown;
     isLockedActive = note.isLocked;
     showLineNumbersActive = note.showLineNumbers;
+    isEditorModeActive = note.isEditorMode;
     // Date/time-named notes (see createNoteIn) are NOT auto-derived from
     // typed content - only a truly untitled note is, so the timestamp name
     // sticks around as a stable identifier unless renamed manually.
@@ -300,7 +313,7 @@
     // Plain-text undo history is per-note - PlainTextEditor resets its own
     // stacks internally when its noteId prop changes, so there's nothing to
     // reset here.
-    if (focusEditor) requestAnimationFrame(() => (isMarkdownActive ? markdownEditorRef : plainEditorRef)?.focus());
+    if (focusEditor) requestAnimationFrame(() => activeTextEditorRef()?.focus());
   };
 
   // focusEditor defaults to false here: opening a note from the sidebar (click,
@@ -348,11 +361,7 @@
     const active = document.activeElement;
     if (treeEl && active && treeEl.contains(active)) {
       if ($selectedId == null) return;
-      if (isMarkdownActive) {
-        markdownEditorRef?.focus();
-      } else {
-        plainEditorRef?.focus();
-      }
+      activeTextEditorRef()?.focus();
       return;
     }
     // Focus the row for whichever note is currently open (falls back to
@@ -434,13 +443,17 @@
     // Switching modes swaps the textarea/MarkdownEditor DOM out from under
     // whichever one was focused - wait for that swap to render, then focus
     // whichever editor is now showing so typing can continue immediately.
-    void tick().then(() => {
-      if (next) {
-        markdownEditorRef?.focus();
-      } else {
-        plainEditorRef?.focus();
-      }
-    });
+    // While editor mode is on, neither actually (re)mounts - it stays the
+    // one editor regardless of this flag - so there's no DOM swap to chase.
+    if (!isEditorModeActive) {
+      void tick().then(() => {
+        if (next) {
+          markdownEditorRef?.focus();
+        } else {
+          plainEditorRef?.focus();
+        }
+      });
+    }
     void notesStore.saveNote({ id: $selectedId, isMarkdown: next }).then((saved) => {
       notesStore.applyUpdatedNote(saved);
     });
@@ -448,10 +461,22 @@
 
   const insertAtCursor = (text: string) => {
     if (isLockedActive) return;
-    if (isMarkdownActive) {
-      markdownEditorRef?.insertAtCursor(text);
-    } else {
-      plainEditorRef?.insertAtCursor(text);
+    activeTextEditorRef()?.insertAtCursor(text);
+  };
+
+  // Always available regardless of isEditorModeActive (Alt+F, and the
+  // ActionToolbar button) - each editor's own format() resolves the note's
+  // persisted language (falling back to auto-detection) and reformats just
+  // the current selection if there is one, otherwise the whole note. The
+  // resulting edit flows back through that editor's normal onUpdate wiring
+  // (same as typing), so it autosaves the same way any other edit does.
+  const formatActiveNote = async () => {
+    if ($selectedId == null || isLockedActive) return;
+    try {
+      await activeTextEditorRef()?.format();
+      status.set('Formatted');
+    } catch (err) {
+      status.set(err instanceof Error ? err.message : 'Format failed');
     }
   };
 
@@ -513,6 +538,11 @@
   const toggleLock = async (id: number) => {
     const saved = await notesStore.toggleLock(id);
     if (saved && $selectedId === id) isLockedActive = saved.isLocked;
+  };
+
+  const toggleEditorMode = async (id: number) => {
+    const saved = await notesStore.toggleEditorMode(id);
+    if (saved && $selectedId === id) isEditorModeActive = saved.isEditorMode;
   };
 
   const showToast = (message: string) => {
@@ -610,7 +640,7 @@
     // this menu itself uses for the link check below - only the Markdown
     // editor can compute one (links/task items only exist there), so a
     // plain-text note gets a minimal context with isMarkdown: false.
-    const pluginContext: EditorContext = isMarkdownActive && markdownEditorRef
+    const pluginContext: EditorContext = !isEditorModeActive && isMarkdownActive && markdownEditorRef
       ? markdownEditorRef.getContext(event)
       : { noteId: id, isMarkdown: false, taskItem: null, linkHref: null, selectionText: '' };
     const linkHref = pluginContext.linkHref;
@@ -747,6 +777,13 @@
   const setVimMode = (enabled: boolean) => {
     vimModeEnabled = enabled;
     void settingsService.saveVimMode(enabled);
+  };
+
+  const handleLanguageChange = (language: string) => {
+    if ($selectedId == null) return;
+    void notesStore.saveNote({ id: $selectedId, language }).then((saved) => {
+      notesStore.applyUpdatedNote(saved);
+    });
   };
 
   const setDateTimeNoteNames = (enabled: boolean) => {
@@ -924,6 +961,11 @@
       toggleMarkdown();
     }
 
+    if (event.altKey && event.key.toLowerCase() === 'e') {
+      event.preventDefault();
+      if ($selectedId != null) void toggleEditorMode($selectedId);
+    }
+
     if (event.altKey && event.key.toLowerCase() === 'b') {
       event.preventDefault();
       void cycleDatabase();
@@ -936,10 +978,15 @@
 
     if (event.altKey && event.key.toLowerCase() === 'o') {
       event.preventDefault();
-      if (isMarkdownActive) {
+      if (!isEditorModeActive && isMarkdownActive) {
         const href = markdownEditorRef?.getLinkHrefAtCursor();
         if (href) void openLink(href);
       }
+    }
+
+    if (event.altKey && event.key.toLowerCase() === 'f') {
+      event.preventDefault();
+      void formatActiveNote();
     }
 
     if (event.altKey && event.key.toLowerCase() === 'r') {
@@ -1120,6 +1167,9 @@
     onShowMarkdownHelp={() => (markdownHelpOpen = true)}
     onShowShortcuts={() => (shortcutsOpen = true)}
     onShowSettings={() => (settingsOpen = true)}
+    onFormat={formatActiveNote}
+    editorModeEnabled={isEditorModeActive}
+    onSearch={() => editorModeEditorRef?.openSearch()}
   />
 
   <div class="shell">
@@ -1203,7 +1253,13 @@
       </div>
       <div class="header-meta">
         {#if $selectedId != null}
-          <NoteInfoPopover createdAt={selectedNoteCreatedAt} updatedAt={selectedNoteUpdatedAt} onError={(msg) => status.set(msg)} />
+          <NoteInfoPopover
+            createdAt={selectedNoteCreatedAt}
+            updatedAt={selectedNoteUpdatedAt}
+            effectiveLanguage={selectedNoteEffectiveLanguage}
+            onLanguageChange={handleLanguageChange}
+            onError={(msg) => status.set(msg)}
+          />
         {/if}
         {#if isLockedActive}
           <svg class="icon lock-indicator" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-label="Locked">
@@ -1216,7 +1272,21 @@
 
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="editor-content" on:contextmenu|preventDefault={openEditorMenu}>
-      {#if isMarkdownActive}
+      {#if isEditorModeActive}
+        <EditorModeEditor
+          bind:this={editorModeEditorRef}
+          content={noteText}
+          noteId={$selectedId ?? -1}
+          onUpdate={handlePlainEditorUpdate}
+          placeholder="Start typing instantly..."
+          editable={!isLockedActive}
+          showLineNumbers={showLineNumbersActive}
+          vimMode={vimModeEnabled}
+          themeMode={theme}
+          language={selectedNoteLanguage}
+          isMarkdown={isMarkdownActive}
+        />
+      {:else if isMarkdownActive}
         <MarkdownEditor
           bind:this={markdownEditorRef}
           content={noteText}
@@ -1226,6 +1296,7 @@
           placeholder="Start typing instantly..."
           editable={!isLockedActive}
           vimMode={vimModeEnabled}
+          language={selectedNoteLanguage}
         />
       {:else}
         <PlainTextEditor
@@ -1237,6 +1308,7 @@
           editable={!isLockedActive}
           showLineNumbers={showLineNumbersActive}
           vimMode={vimModeEnabled}
+          language={selectedNoteLanguage}
         />
       {/if}
     </div>
@@ -1248,9 +1320,13 @@
       {searchMatchIndex}
       {isMarkdownActive}
       {isLockedActive}
+      {isEditorModeActive}
       onSearchKeydown={handleTreeKeydown}
       onGoToSearchMatch={goToSearchMatch}
       onToggleMarkdown={toggleMarkdown}
+      onToggleEditorMode={() => {
+        if ($selectedId != null) void toggleEditorMode($selectedId);
+      }}
     />
   </section>
   </div>

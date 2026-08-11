@@ -19,7 +19,9 @@ const SCHEMA_SQL: &str = "CREATE TABLE IF NOT EXISTS folders (
         is_markdown INTEGER NOT NULL DEFAULT 0,
         is_locked INTEGER NOT NULL DEFAULT 0,
         sort_order INTEGER NOT NULL DEFAULT 0,
-        show_line_numbers INTEGER NOT NULL DEFAULT 0
+        show_line_numbers INTEGER NOT NULL DEFAULT 0,
+        language TEXT,
+        is_editor_mode INTEGER NOT NULL DEFAULT 0
     );";
 
 /// Holds the live connection to whichever database is currently active.
@@ -65,6 +67,8 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
     migrate_add_locked_column(conn);
     migrate_add_sort_order_column(conn);
     migrate_add_show_line_numbers_column(conn);
+    migrate_add_language_column(conn);
+    migrate_add_editor_mode_column(conn);
 
     conn.execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|e| e.to_string())?;
@@ -331,6 +335,31 @@ fn migrate_add_show_line_numbers_column(conn: &Connection) {
         .expect("failed to add show_line_numbers column");
 }
 
+/// Adds the per-note editor-mode language override to existing databases
+/// created before it existed. Fresh installs already get the column via
+/// CREATE TABLE above. NULL (the default, both here and on a fresh insert)
+/// means "auto-detect from content" - only a non-NULL value pins a note to
+/// a specific language.
+fn migrate_add_language_column(conn: &Connection) {
+    if column_exists(conn, "language") {
+        return;
+    }
+    conn.execute_batch("ALTER TABLE notes ADD COLUMN language TEXT;")
+        .expect("failed to add language column");
+}
+
+/// Adds the per-note editor-mode toggle to existing databases created
+/// before it existed. Fresh installs already get the column via CREATE
+/// TABLE above. Same per-note pattern as is_markdown/is_locked - editor
+/// mode is a note-by-note choice, not a global setting.
+fn migrate_add_editor_mode_column(conn: &Connection) {
+    if column_exists(conn, "is_editor_mode") {
+        return;
+    }
+    conn.execute_batch("ALTER TABLE notes ADD COLUMN is_editor_mode INTEGER NOT NULL DEFAULT 0;")
+        .expect("failed to add is_editor_mode column");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,6 +524,8 @@ mod tests {
         assert!(column_exists(&conn, "is_locked"));
         assert!(column_exists(&conn, "sort_order"));
         assert!(column_exists(&conn, "show_line_numbers"));
+        assert!(column_exists(&conn, "language"));
+        assert!(column_exists(&conn, "is_editor_mode"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -640,6 +671,75 @@ mod tests {
 
         // Safe to rerun.
         migrate_add_show_line_numbers_column(&conn);
+    }
+
+    #[test]
+    fn migrate_add_language_column_adds_it_to_existing_databases() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL DEFAULT 'Untitled',
+                content TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                parent_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+                is_markdown INTEGER NOT NULL DEFAULT 0,
+                is_locked INTEGER NOT NULL DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                show_line_numbers INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO notes (title, content, created_at, updated_at, parent_id)
+            VALUES ('Existing note', '', '2026-01-01T00:00:00', '2026-01-01T00:00:00', NULL);",
+        )
+        .unwrap();
+
+        assert!(!column_exists(&conn, "language"));
+        migrate_add_language_column(&conn);
+        assert!(column_exists(&conn, "language"));
+
+        let language: Option<String> = conn
+            .query_row("SELECT language FROM notes WHERE title = 'Existing note'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(language, None, "existing notes should default to auto-detect (NULL)");
+
+        // Safe to rerun.
+        migrate_add_language_column(&conn);
+    }
+
+    #[test]
+    fn migrate_add_editor_mode_column_adds_it_to_existing_databases() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL DEFAULT 'Untitled',
+                content TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                parent_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+                is_markdown INTEGER NOT NULL DEFAULT 0,
+                is_locked INTEGER NOT NULL DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                show_line_numbers INTEGER NOT NULL DEFAULT 0,
+                language TEXT
+            );
+            INSERT INTO notes (title, content, created_at, updated_at, parent_id)
+            VALUES ('Existing note', '', '2026-01-01T00:00:00', '2026-01-01T00:00:00', NULL);",
+        )
+        .unwrap();
+
+        assert!(!column_exists(&conn, "is_editor_mode"));
+        migrate_add_editor_mode_column(&conn);
+        assert!(column_exists(&conn, "is_editor_mode"));
+
+        let is_editor_mode: bool = conn
+            .query_row("SELECT is_editor_mode FROM notes WHERE title = 'Existing note'", [], |r| r.get(0))
+            .unwrap();
+        assert!(!is_editor_mode, "existing notes should default to editor mode off");
+
+        // Safe to rerun.
+        migrate_add_editor_mode_column(&conn);
     }
 
     #[test]

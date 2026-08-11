@@ -16,6 +16,8 @@
   import { vim, getCM } from '@replit/codemirror-vim';
   import { vimModeIndicator } from '../stores/vimModeIndicator';
   import { toLfNewlines } from '../utils/clipboard';
+  import { detectLanguage, type LanguageId } from '../utils/languageDetect';
+  import { formatText } from '../utils/formatCode';
 
   export let content: string;
   export let noteId: number;
@@ -24,6 +26,11 @@
   export let editable = true;
   export let showLineNumbers = false;
   export let vimMode = false;
+  // The note's persisted editor-mode language override (see
+  // EditorModeEditor.svelte) - Format uses this (falling back to
+  // auto-detection) even here in the plain view, so a note's language
+  // choice applies consistently no matter which view you format it from.
+  export let language: string | null = null;
 
   let container: HTMLDivElement;
   let view: EditorView | undefined;
@@ -245,6 +252,20 @@
       scrollIntoView: true,
     });
     view.focus();
+  }
+
+  // Formats just the current selection if there is one, otherwise the
+  // whole note - see formatCode.ts for the language-aware/tidy-up split.
+  export async function format(): Promise<void> {
+    if (!view) return;
+    const { from, to } = view.state.selection.main;
+    const hasSelection = from !== to;
+    const range = hasSelection ? { from, to } : { from: 0, to: view.state.doc.length };
+    const source = view.state.doc.sliceString(range.from, range.to);
+    const effectiveLanguage = (language as LanguageId | null) ?? detectLanguage(content);
+    const formatted = await formatText(source, effectiveLanguage);
+    if (formatted === source) return;
+    view.dispatch({ changes: { from: range.from, to: range.to, insert: formatted } });
   }
 </script>
 

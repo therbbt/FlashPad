@@ -11,6 +11,14 @@ export interface NoteRecord {
   isLocked: boolean;
   sortOrder: number;
   showLineNumbers: boolean;
+  // NULL means "auto-detect from content" (editor mode) - only a set value
+  // pins the note to a specific language. See languageDetect.ts.
+  language: string | null;
+  // Per-note toggle (same pattern as isMarkdown) for the syntax-highlighted
+  // CodeMirror view - independent of isMarkdown, since a note can be
+  // prose-in-editor-mode (shown as markdown-highlighted source) or
+  // code-in-plain-mode, etc.
+  isEditorMode: boolean;
 }
 
 export interface ImportSummary {
@@ -28,8 +36,19 @@ export interface ImportSummary {
 // polymorphic backend.
 export interface NotesBackend {
   list(): Promise<NoteRecord[]>;
-  create(payload: { title?: string; content?: string; parentId?: number | null; isMarkdown?: boolean }): Promise<NoteRecord>;
-  save(note: { id: number; title?: string; content?: string; isMarkdown?: boolean; isLocked?: boolean; showLineNumbers?: boolean }): Promise<NoteRecord>;
+  create(payload: { title?: string; content?: string; parentId?: number | null; isMarkdown?: boolean; isEditorMode?: boolean }): Promise<NoteRecord>;
+  // language: omit to leave unchanged, '' to reset to auto-detect, or a
+  // language id to pin it - see NoteUpdate::language in notes.rs.
+  save(note: {
+    id: number;
+    title?: string;
+    content?: string;
+    isMarkdown?: boolean;
+    isLocked?: boolean;
+    showLineNumbers?: boolean;
+    language?: string;
+    isEditorMode?: boolean;
+  }): Promise<NoteRecord>;
   saveChecklistToggle(id: number, content: string): Promise<NoteRecord>;
   delete(id: number): Promise<void>;
   move(id: number, parentId: number | null): Promise<NoteRecord>;
@@ -62,7 +81,7 @@ export class NotesService implements NotesBackend {
     return await invoke<NoteRecord[]>('list_notes');
   }
 
-  async create(payload: { title?: string; content?: string; parentId?: number | null; isMarkdown?: boolean } = {}): Promise<NoteRecord> {
+  async create(payload: { title?: string; content?: string; parentId?: number | null; isMarkdown?: boolean; isEditorMode?: boolean } = {}): Promise<NoteRecord> {
     if (!isTauriRuntime()) {
       const parentId = payload.parentId ?? null;
       const existing = readFallback();
@@ -78,17 +97,34 @@ export class NotesService implements NotesBackend {
         isLocked: false,
         sortOrder: siblingOrders.length ? Math.max(...siblingOrders) + 1 : 0,
         showLineNumbers: false,
+        language: null,
+        isEditorMode: payload.isEditorMode ?? false,
       };
       const notes = [...existing, note];
       writeFallback(notes);
       return note;
     }
     return await invoke<NoteRecord>('create_note', {
-      note: { title: payload.title, content: payload.content, parentId: payload.parentId ?? null, isMarkdown: payload.isMarkdown ?? false },
+      note: {
+        title: payload.title,
+        content: payload.content,
+        parentId: payload.parentId ?? null,
+        isMarkdown: payload.isMarkdown ?? false,
+        isEditorMode: payload.isEditorMode ?? false,
+      },
     });
   }
 
-  async save(note: { id: number; title?: string; content?: string; isMarkdown?: boolean; isLocked?: boolean; showLineNumbers?: boolean }): Promise<NoteRecord> {
+  async save(note: {
+    id: number;
+    title?: string;
+    content?: string;
+    isMarkdown?: boolean;
+    isLocked?: boolean;
+    showLineNumbers?: boolean;
+    language?: string;
+    isEditorMode?: boolean;
+  }): Promise<NoteRecord> {
     if (!isTauriRuntime()) {
       const notes = readFallback().map((item) => (item.id === note.id ? { ...item, ...note, updatedAt: new Date().toISOString() } : item));
       writeFallback(notes);

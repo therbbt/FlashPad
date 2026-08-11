@@ -548,3 +548,15 @@ export async function toggleLineNumbers(id: number): Promise<NoteRecord | null> 
   status.set(next ? 'Line numbers on' : 'Line numbers off');
   return saved;
 }
+
+// Per-note toggle for the syntax-highlighted CodeMirror view (see
+// EditorModeEditor.svelte) - same shape as toggleLock/toggleLineNumbers.
+export async function toggleEditorMode(id: number): Promise<NoteRecord | null> {
+  const note = get(notes).find((n) => n.id === id);
+  if (!note) return null;
+  const next = !note.isEditorMode;
+  const saved = await activeBackend.save({ id, isEditorMode: next });
+  notes.update((list) => list.map((n) => (n.id === saved.id ? saved : n)));
+  status.set(next ? 'Editor mode on' : 'Editor mode off');
+  return saved;
+}

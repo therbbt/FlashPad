@@ -19,7 +19,9 @@
         ['Alt+L', 'Lock / unlock the current note'],
         ['Alt+D', 'Delete the current note (and its subnotes)'],
         ['Alt+M', 'Toggle Markdown view'],
+        ['Alt+E', 'Toggle Editor mode (syntax highlighting, search/replace, language detection)'],
         ['Alt+R', 'Toggle line numbers (plain text notes)'],
+        ['Alt+F', 'Format the current selection, or the whole note if nothing is selected'],
         ['Alt+↑ / Alt+↓', 'Move the current note up/down among its siblings'],
         ['Alt+→', 'Nest the current note under its previous sibling'],
         ['Alt+←', "Move the current note out to its parent's level"],
@@ -46,6 +48,12 @@
       label: 'Database',
       items: [
         ['Alt+B', 'Switch to the next database'],
+      ] as [string, string][],
+    },
+    {
+      label: 'Editor mode',
+      items: [
+        ['Ctrl/Cmd+F', 'Open search / replace'],
       ] as [string, string][],
     },
     {

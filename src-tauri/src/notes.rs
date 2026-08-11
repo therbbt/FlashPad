@@ -20,6 +20,13 @@ pub struct Note {
     pub is_locked: bool,
     pub sort_order: i64,
     pub show_line_numbers: bool,
+    // NULL means "auto-detect from content" (editor mode) - only a set
+    // value pins the note to a specific language.
+    pub language: Option<String>,
+    // Per-note editor-mode toggle, same pattern as is_markdown - some notes
+    // are code/config (want the syntax-highlighted CodeMirror view), others
+    // are prose, independent of each other on a note-by-note basis.
+    pub is_editor_mode: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,6 +38,8 @@ pub struct NoteInput {
     pub is_markdown: Option<bool>,
     pub is_locked: Option<bool>,
     pub show_line_numbers: Option<bool>,
+    pub language: Option<String>,
+    pub is_editor_mode: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,9 +51,18 @@ pub struct NoteUpdate {
     pub is_markdown: Option<bool>,
     pub is_locked: Option<bool>,
     pub show_line_numbers: Option<bool>,
+    // Same two-state convention as every other optional field here: `None`
+    // means "don't touch this field." Unlike the others, language itself
+    // can legitimately be cleared back to auto-detect - since that's not
+    // expressible as a third state of `Option<String>` without
+    // `Option<Option<_>>`, an empty string is the "reset to auto-detect"
+    // sentinel (see update_note below), matching how the frontend's
+    // language picker's "Auto-detect" option sends "".
+    pub language: Option<String>,
+    pub is_editor_mode: Option<bool>,
 }
 
-const SELECT_COLUMNS: &str = "id, title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order, show_line_numbers";
+const SELECT_COLUMNS: &str = "id, title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order, show_line_numbers, language, is_editor_mode";
 
 fn row_to_note(row: &Row) -> rusqlite::Result<Note> {
     Ok(Note {
@@ -58,6 +76,8 @@ fn row_to_note(row: &Row) -> rusqlite::Result<Note> {
         is_locked: row.get(7)?,
         sort_order: row.get(8)?,
         show_line_numbers: row.get(9)?,
+        language: row.get(10)?,
+        is_editor_mode: row.get(11)?,
     })
 }
 
@@ -142,11 +162,16 @@ pub fn create_note(db: State<DbState>, note: NoteInput) -> Result<Note, String> 
     let is_markdown = note.is_markdown.unwrap_or(false);
     let is_locked = note.is_locked.unwrap_or(false);
     let show_line_numbers = note.show_line_numbers.unwrap_or(false);
+    // Unlike update_note, there's no existing row to fall back to here, so
+    // there's no ambiguity to resolve: absent or empty both just mean
+    // "auto-detect," stored as NULL.
+    let language = note.language.filter(|l| !l.is_empty());
+    let is_editor_mode = note.is_editor_mode.unwrap_or(false);
     let sort_order = next_sort_order(&conn, note.parent_id)?;
 
     conn.execute(
-        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order, show_line_numbers) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8)",
-        params![title, content, note.parent_id, now, is_markdown, is_locked, sort_order, show_line_numbers],
+        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order, show_line_numbers, language, is_editor_mode) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![title, content, note.parent_id, now, is_markdown, is_locked, sort_order, show_line_numbers, language, is_editor_mode],
     )
     .map_err(|e| e.to_string())?;
 
@@ -177,11 +202,19 @@ pub fn update_note(db: State<DbState>, note: NoteUpdate) -> Result<Note, String>
     let content = note.content.unwrap_or(existing.content);
     let is_markdown = note.is_markdown.unwrap_or(existing.is_markdown);
     let show_line_numbers = note.show_line_numbers.unwrap_or(existing.show_line_numbers);
+    // None = leave unchanged; Some("") = explicitly reset to auto-detect
+    // (NULL); Some(nonempty) = pin to that language. See NoteUpdate::language.
+    let language = match note.language {
+        None => existing.language,
+        Some(l) if l.is_empty() => None,
+        Some(l) => Some(l),
+    };
+    let is_editor_mode = note.is_editor_mode.unwrap_or(existing.is_editor_mode);
     let now = now_iso();
 
     conn.execute(
-        "UPDATE notes SET title = ?1, content = ?2, updated_at = ?3, is_markdown = ?4, is_locked = ?5, show_line_numbers = ?6 WHERE id = ?7",
-        params![title, content, now, is_markdown, is_locked, show_line_numbers, note.id],
+        "UPDATE notes SET title = ?1, content = ?2, updated_at = ?3, is_markdown = ?4, is_locked = ?5, show_line_numbers = ?6, language = ?7, is_editor_mode = ?8 WHERE id = ?9",
+        params![title, content, now, is_markdown, is_locked, show_line_numbers, language, is_editor_mode, note.id],
     )
     .map_err(|e| e.to_string())?;
 
@@ -296,8 +329,8 @@ pub fn duplicate_note(db: State<DbState>, id: i64) -> Result<Note, String> {
     // A duplicate is never locked, even if the source is - it's a fresh copy
     // the user will likely want to edit further.
     conn.execute(
-        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order, show_line_numbers) VALUES (?1, ?2, ?3, ?4, ?4, ?5, 0, ?6, ?7)",
-        params![title, source.content, source.parent_id, now, source.is_markdown, sort_order, source.show_line_numbers],
+        "INSERT INTO notes (title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order, show_line_numbers, language, is_editor_mode) VALUES (?1, ?2, ?3, ?4, ?4, ?5, 0, ?6, ?7, ?8, ?9)",
+        params![title, source.content, source.parent_id, now, source.is_markdown, sort_order, source.show_line_numbers, source.language, source.is_editor_mode],
     )
     .map_err(|e| e.to_string())?;
 
