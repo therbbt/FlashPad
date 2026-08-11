@@ -246,6 +246,27 @@
     });
     view.focus();
   }
+
+  // Used by the right-click menu (App.svelte's openEditorMenu) to decide
+  // whether Copy/Cut should act on the OS clipboard (a real selection) or
+  // fall back to FlashPad's own note-level tree clipboard (nothing selected).
+  export function getSelectedText(): string {
+    if (!view) return '';
+    const { from, to } = view.state.selection.main;
+    return view.state.sliceDoc(from, to);
+  }
+
+  // Deletes the current selection and returns the text that was removed
+  // ('' if there was no selection) - the caller is responsible for putting
+  // the result on the OS clipboard.
+  export function cutSelection(): string {
+    if (!view) return '';
+    const { from, to } = view.state.selection.main;
+    if (from === to) return '';
+    const text = view.state.sliceDoc(from, to);
+    view.dispatch({ changes: { from, to, insert: '' } });
+    return text;
+  }
 </script>
 
 <div class="plain-editor-wrap" bind:this={container}></div>

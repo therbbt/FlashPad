@@ -519,6 +519,10 @@
               <input type="checkbox" checked={vimMode} on:change={(e) => onVimModeChange(e.currentTarget.checked)} />
             </label>
             <p class="hint">Modal editing with vim motions - applies to plain-text notes only.</p>
+            <p class="hint">
+              Editor mode (syntax highlighting, search/replace, language detection) is a per-note toggle now - use
+              Alt+E or the Editor mode button in the footer, not a setting here.
+            </p>
           </section>
 
           <section class="card">

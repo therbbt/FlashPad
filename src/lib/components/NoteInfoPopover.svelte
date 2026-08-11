@@ -1,9 +1,16 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
+  import { LANGUAGE_OPTIONS, type LanguageId } from '../utils/languageDetect';
 
   export let createdAt: string | null;
   export let updatedAt: string | null;
+  // effectiveLanguage is what's ACTUALLY driving highlighting/formatting
+  // right now (the pinned language, or the live auto-detect guess) - the
+  // select shows this, but picking a value always sets an explicit pin
+  // (via onLanguageChange), even if it happens to match the current guess.
+  export let effectiveLanguage: LanguageId | null = null;
+  export let onLanguageChange: ((language: string) => void) | null = null;
   export let onError: (message: string) => void;
 
   let open = false;
@@ -35,6 +42,11 @@
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Failed to copy');
     }
+  };
+
+  const handleLanguagePick = (event: Event) => {
+    const picked = (event.currentTarget as HTMLSelectElement).value;
+    onLanguageChange?.(picked === 'plain' ? '' : picked);
   };
 
   onMount(() => {
@@ -111,6 +123,23 @@
               </svg>
             {/if}
           </button>
+        </div>
+      {/if}
+      {#if onLanguageChange && effectiveLanguage}
+        <div class="note-info-row">
+          <div class="note-info-text">
+            <span class="note-info-label">Language</span>
+          </div>
+          <div class="note-info-select-wrap">
+            <select class="note-info-select" value={effectiveLanguage} on:change={handleLanguagePick} aria-label="Language">
+              {#each LANGUAGE_OPTIONS as opt (opt.id)}
+                <option value={opt.id}>{opt.label}</option>
+              {/each}
+            </select>
+            <svg class="note-info-select-caret" width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2.5 3.5L5 6.5L7.5 3.5" />
+            </svg>
+          </div>
         </div>
       {/if}
     </div>
@@ -208,5 +237,36 @@
   .note-info-copy:hover {
     color: var(--accent);
     border-color: var(--accent);
+  }
+
+  .note-info-select-wrap {
+    position: relative;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+  }
+
+  .note-info-select {
+    appearance: none;
+    -webkit-appearance: none;
+    font: inherit;
+    font-size: 0.75rem;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+    padding: 0.25rem 1.5rem 0.25rem 0.5rem;
+    cursor: pointer;
+  }
+
+  .note-info-select:hover {
+    border-color: var(--accent-soft, var(--accent));
+  }
+
+  .note-info-select-caret {
+    position: absolute;
+    right: 0.45rem;
+    color: var(--muted);
+    pointer-events: none;
   }
 </style>

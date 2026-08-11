@@ -53,6 +53,14 @@ create table public.notes (
   is_locked boolean not null default false,
   sort_order integer not null default 0,
   show_line_numbers boolean not null default false,
+  -- NULL means "auto-detect from content" (editor mode) - only a set value
+  -- pins the note to a specific language. Mirrors src-tauri/src/db.rs's
+  -- notes.language column exactly.
+  language text,
+  -- Per-note editor-mode toggle, same pattern as is_markdown - some notes
+  -- are code/config (want the syntax-highlighted CodeMirror view), others
+  -- are prose, independent of each other on a note-by-note basis.
+  is_editor_mode boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -187,8 +195,9 @@ create trigger notes_before_write
 -- an UPDATE statement whose SET clause actually names one of these columns,
 -- mirroring notes.rs's per-command SQL exactly rather than approximating it
 -- with a value-diff check: update_note's statement always SETs
--- title/content/is_markdown/is_locked/show_line_numbers (so this always
--- fires, unconditionally bumping updated_at, matching Rust's own
+-- title/content/is_markdown/is_locked/show_line_numbers/language/
+-- is_editor_mode (so this
+-- always fires, unconditionally bumping updated_at, matching Rust's own
 -- unconditional `now_iso()` on every save); move_note's and reorder_note's
 -- dragged-note statement SETs parent_id (fires); reorder_note's sibling
 -- statements SET sort_order only, naming none of these columns (does NOT
@@ -204,7 +213,7 @@ begin
 end;
 $$;
 create trigger notes_before_update
-  before update of title, content, is_markdown, is_locked, show_line_numbers, parent_id on public.notes
+  before update of title, content, is_markdown, is_locked, show_line_numbers, language, is_editor_mode, parent_id on public.notes
   for each row execute function public.notes_touch_updated_at();
 
 -- ---------- invite redemption ----------

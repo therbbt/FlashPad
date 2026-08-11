@@ -296,6 +296,30 @@
     return (editor.getAttributes('link').href as string | undefined) ?? null;
   }
 
+  // Used by the right-click menu (App.svelte's openEditorMenu) to decide
+  // whether Copy/Cut should act on the OS clipboard (a real selection) or
+  // fall back to FlashPad's own note-level tree clipboard (nothing
+  // selected). Same textBetween call getContext() already uses for
+  // selectionText - kept as its own method so App.svelte doesn't need a
+  // synthetic MouseEvent just to ask "is anything selected right now".
+  export function getSelectedText(): string {
+    if (!editor) return '';
+    const { from, to } = editor.state.selection;
+    return from !== to ? editor.state.doc.textBetween(from, to, '\n') : '';
+  }
+
+  // Deletes the current selection and returns the text that was removed
+  // ('' if there was no selection) - the caller is responsible for putting
+  // the result on the OS clipboard.
+  export function cutSelection(): string {
+    if (!editor) return '';
+    const { from, to } = editor.state.selection;
+    if (from === to) return '';
+    const text = editor.state.doc.textBetween(from, to, '\n');
+    editor.commands.deleteSelection();
+    return text;
+  }
+
   // Appends " " + label as a link to the to-do row whose taskItem node
   // starts at nodePos - called (possibly much) later than getContext(),
   // e.g. after a plugin's async action finishes, so the document may have

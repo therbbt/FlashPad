@@ -1,7 +1,7 @@
 import { supabase } from '../supabaseClient';
 import type { NoteRecord, NotesBackend } from './notesService';
 
-const COLUMNS = 'id, title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order, show_line_numbers';
+const COLUMNS = 'id, title, content, parent_id, created_at, updated_at, is_markdown, is_locked, sort_order, show_line_numbers, language, is_editor_mode';
 
 interface NoteRow {
   id: number;
@@ -14,6 +14,8 @@ interface NoteRow {
   is_locked: boolean;
   sort_order: number;
   show_line_numbers: boolean;
+  language: string | null;
+  is_editor_mode: boolean;
 }
 
 const rowToNote = (row: NoteRow): NoteRecord => ({
@@ -27,6 +29,8 @@ const rowToNote = (row: NoteRow): NoteRecord => ({
   isLocked: row.is_locked,
   sortOrder: row.sort_order,
   showLineNumbers: row.show_line_numbers,
+  language: row.language,
+  isEditorMode: row.is_editor_mode,
 });
 
 // Ports src-tauri/src/notes.rs's Tauri commands to Supabase, scoped to a
@@ -100,7 +104,7 @@ export class CloudNotesService implements NotesBackend {
     return (data as unknown as NoteRow[]).map(rowToNote);
   }
 
-  async create(payload: { title?: string; content?: string; parentId?: number | null; isMarkdown?: boolean }): Promise<NoteRecord> {
+  async create(payload: { title?: string; content?: string; parentId?: number | null; isMarkdown?: boolean; isEditorMode?: boolean }): Promise<NoteRecord> {
     const parentId = payload.parentId ?? null;
     const sortOrder = await this.nextSortOrder(parentId);
     const { data, error } = await this.client()
@@ -112,6 +116,7 @@ export class CloudNotesService implements NotesBackend {
         parent_id: parentId,
         is_markdown: payload.isMarkdown ?? false,
         sort_order: sortOrder,
+        is_editor_mode: payload.isEditorMode ?? false,
       })
       .select(COLUMNS)
       .single();
@@ -124,7 +129,16 @@ export class CloudNotesService implements NotesBackend {
   // can't distinguish "this write came from the checklist-toggle path" from
   // a general save, so this check lives client-side only, same as the
   // Rust version's own framing of it.
-  async save(note: { id: number; title?: string; content?: string; isMarkdown?: boolean; isLocked?: boolean; showLineNumbers?: boolean }): Promise<NoteRecord> {
+  async save(note: {
+    id: number;
+    title?: string;
+    content?: string;
+    isMarkdown?: boolean;
+    isLocked?: boolean;
+    showLineNumbers?: boolean;
+    language?: string;
+    isEditorMode?: boolean;
+  }): Promise<NoteRecord> {
     const existing = await this.findNote(note.id);
     const isLocked = note.isLocked ?? existing.isLocked;
 
@@ -141,10 +155,22 @@ export class CloudNotesService implements NotesBackend {
     const content = note.content ?? existing.content;
     const isMarkdown = note.isMarkdown ?? existing.isMarkdown;
     const showLineNumbers = note.showLineNumbers ?? existing.showLineNumbers;
+    const isEditorMode = note.isEditorMode ?? existing.isEditorMode;
+    // Same two-state convention as notes.rs's update_note: undefined = leave
+    // unchanged, '' = explicitly reset to auto-detect (NULL), nonempty = pin.
+    const language = note.language === undefined ? existing.language : note.language === '' ? null : note.language;
 
     const { data, error } = await this.client()
       .from('notes')
-      .update({ title, content, is_markdown: isMarkdown, is_locked: isLocked, show_line_numbers: showLineNumbers })
+      .update({
+        title,
+        content,
+        is_markdown: isMarkdown,
+        is_locked: isLocked,
+        show_line_numbers: showLineNumbers,
+        language,
+        is_editor_mode: isEditorMode,
+      })
       .eq('notebook_id', this.notebookId)
       .eq('id', note.id)
       .select(COLUMNS)
@@ -201,6 +227,8 @@ export class CloudNotesService implements NotesBackend {
         is_locked: false,
         sort_order: sortOrder,
         show_line_numbers: source.showLineNumbers,
+        language: source.language,
+        is_editor_mode: source.isEditorMode,
       })
       .select(COLUMNS)
       .single();

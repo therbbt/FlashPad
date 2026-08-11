@@ -19,7 +19,7 @@
         ['Alt+L', 'Lock / unlock the current note'],
         ['Alt+D', 'Delete the current note (and its subnotes)'],
         ['Alt+M', 'Toggle Markdown view'],
-        ['Alt+R', 'Toggle line numbers (plain text notes)'],
+        ['Alt+E', 'Toggle Editor mode (syntax highlighting, search/replace, language detection)'],
         ['Alt+↑ / Alt+↓', 'Move the current note up/down among its siblings'],
         ['Alt+→', 'Nest the current note under its previous sibling'],
         ['Alt+←', "Move the current note out to its parent's level"],
@@ -49,6 +49,14 @@
       ] as [string, string][],
     },
     {
+      label: 'Editor mode',
+      items: [
+        ['Alt+F', 'Format the current selection, or the whole note if nothing is selected'],
+        ['Alt+R', 'Toggle the line-number gutter'],
+        ['Ctrl/Cmd+F', 'Open search / replace'],
+      ] as [string, string][],
+    },
+    {
       label: 'Navigation',
       items: [
         ['Alt+T', 'Toggle focus between the editor and the notes menu'],
@@ -60,8 +68,8 @@
     {
       label: 'Mouse & renaming',
       items: [
-        ['Right-click a note', 'New subnote, rename, duplicate, move, lock, delete'],
-        ['Right-click the text', 'Copy, cut, or paste the note; lock / unlock'],
+        ['Right-click a note', 'New subnote, rename, duplicate, move, copy/cut/paste, lock, delete'],
+        ['Right-click the text', 'Copy/cut the selection, paste, lock / unlock'],
         ['Enter / Esc', 'While renaming: confirm / cancel'],
       ] as [string, string][],
     },
