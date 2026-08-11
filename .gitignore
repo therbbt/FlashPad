@@ -2,6 +2,10 @@
 node_modules/
 dist/
 
+# Local Supabase config (project URL/anon key) - never commit real values
+.env
+.env.local
+
 # Bundled local Node runtime (see tauri.conf.json beforeDevCommand)
 .local/
 

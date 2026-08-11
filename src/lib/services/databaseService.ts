@@ -11,7 +11,10 @@ export interface DatabaseProfile {
 }
 
 export interface CrossDatabaseNote extends NoteRecord {
-  databaseId: number;
+  // number for a local profile, string (a notebook uuid) for a cloud
+  // notebook - see databaseStore.ts's refreshOtherDatabaseNotes, which
+  // merges this Rust-sourced list with cloud notebook results.
+  databaseId: number | string;
   databaseName: string;
 }
 

@@ -4,7 +4,7 @@
   // the values that mix local editor-mirror state with notes/database data
   // (computed in App.svelte, since the sidebar tree needs them too) come in
   // as props.
-  import { databases, searchAllDatabases, toggleSearchAllDatabases } from '../stores/databaseStore';
+  import { hasSearchableOtherSources, searchAllDatabases, toggleSearchAllDatabases } from '../stores/databaseStore';
   import { selectedId } from '../stores/notesStore';
   import { status } from '../stores/statusStore';
   import { vimModeIndicator } from '../stores/vimModeIndicator';
@@ -25,12 +25,12 @@
     <div class="search-input-wrap">
       <input
         class="search-input"
-        class:with-scope-btn={$databases.length > 1}
+        class:with-scope-btn={$hasSearchableOtherSources}
         bind:value={query}
         on:keydown={onSearchKeydown}
         placeholder="Search notes"
       />
-      {#if $databases.length > 1}
+      {#if $hasSearchableOtherSources}
         <button
           class="search-scope-btn"
           class:active={$searchAllDatabases}
