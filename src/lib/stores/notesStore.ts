@@ -1,11 +1,38 @@
 import { derived, get, writable } from 'svelte/store';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { NotesService, type NoteRecord } from '../services/notesService';
+import { NotesService, type NoteRecord, type NotesBackend } from '../services/notesService';
 import type { TreeItem } from '../components/TreeNode.svelte';
 import type { ContextMenuItem } from '../components/ContextMenu.svelte';
 import { status } from './statusStore';
 
-const notesService = new NotesService();
+// The local Tauri/SQLite backend, kept as its own reference (not just the
+// initial value of activeBackend below) because importFlashNoteFolder is
+// local-only - it reads files from disk via Tauri's dialog+fs directly in
+// Rust and was never made part of NotesBackend, so it must always be called
+// against this instance regardless of which backend is currently active.
+const localNotesService = new NotesService();
+let activeBackend: NotesBackend = localNotesService;
+
+// Lets App.svelte (database switching) and the cloud notebook UI repoint
+// every note operation below at either the local Tauri backend or a
+// Supabase-backed CloudNotesService, without notesStore's own call sites
+// needing to know which one is live.
+export function setActiveNotesBackend(backend: NotesBackend): void {
+  activeBackend = backend;
+}
+
+// Convenience for switching back to the local backend, so App.svelte never
+// needs its own NotesService reference (or import) just to call
+// setActiveNotesBackend(new NotesService()) - reuses the same
+// localNotesService instance every time rather than constructing a new one
+// per switch.
+export function useLocalNotesBackend(): void {
+  activeBackend = localNotesService;
+}
+
+export function isCloudBackendActive(): boolean {
+  return activeBackend !== localNotesService;
+}
 
 const EXPANDED_KEY = 'flashpad.expandedFolders';
 
@@ -134,7 +161,7 @@ export const dropDisabledIds = derived([draggingId, notes], ([$draggingId]) =>
 // ---------- data loading ----------
 
 export async function refreshNotes(): Promise<void> {
-  notes.set(await notesService.list());
+  notes.set(await activeBackend.list());
 }
 
 export async function refreshAll(): Promise<void> {
@@ -144,10 +171,18 @@ export async function refreshAll(): Promise<void> {
 
 // Replaces one note in place after a save that doesn't otherwise change
 // selection/tree shape (editor autosave, Markdown-mode toggle) - the
-// caller already has the saved record back from notesService.
+// caller already has the saved record back from the backend.
 export function applyUpdatedNote(saved: NoteRecord): void {
   notes.update((list) => list.map((n) => (n.id === saved.id ? saved : n)));
 }
+
+// Thin passthroughs so App.svelte's editor autosave / markdown-toggle paths
+// never hold their own NotesService reference - routing them through here
+// means setActiveNotesBackend is the single place backend selection lives,
+// with no second copy of the app that could keep writing to the wrong
+// database after switching to a cloud notebook.
+export const saveNote = (note: Parameters<NotesBackend['save']>[0]): Promise<NoteRecord> => activeBackend.save(note);
+export const saveChecklistToggle = (id: number, content: string): Promise<NoteRecord> => activeBackend.saveChecklistToggle(id, content);
 
 // Clears everything scoped to the previously-active database's notes -
 // called when switching databases so no stale ids from the old vault leak
@@ -167,7 +202,7 @@ export function collapseAll(): void {
 // ---------- creation ----------
 
 export async function createNoteIn(parentId: number | null, defaultTitle = 'Untitled'): Promise<NoteRecord> {
-  const created = await notesService.create({ title: defaultTitle, content: '', parentId });
+  const created = await activeBackend.create({ title: defaultTitle, content: '', parentId });
   notes.update((list) => [created, ...list]);
   if (parentId != null) {
     expandedNotes.update((set) => (set.has(parentId) ? set : new Set(set).add(parentId)));
@@ -189,10 +224,18 @@ export async function createNoteIn(parentId: number | null, defaultTitle = 'Unti
 // propagate so Settings can display them. Returns null if the user
 // cancelled the folder picker, distinct from a real failure.
 export async function importFromFolder(): Promise<{ imported: NoteRecord | null; importedCount: number } | null> {
+  // Local-only: it reads files from disk via Tauri directly into whichever
+  // local SQLite profile is open, so running it while a cloud notebook is
+  // active would silently write into a local database the user isn't even
+  // looking at. Settings should already hide this action in that state -
+  // this is the defense-in-depth backstop.
+  if (isCloudBackendActive()) {
+    throw new Error('Importing from a folder only works with a local database - switch to one first.');
+  }
   const picked = await openDialog({ directory: true, title: 'Select a FlashNote export folder' });
   if (typeof picked !== 'string') return null;
 
-  const summary = await notesService.importFlashNoteFolder(picked);
+  const summary = await localNotesService.importFlashNoteFolder(picked);
   await refreshNotes();
   const imported = summary.firstNoteId != null ? get(notes).find((n) => n.id === summary.firstNoteId) ?? null : null;
   if (imported) focusedKey.set(`note:${imported.id}`);
@@ -255,7 +298,7 @@ export async function createWelcomeNote(hotkeyLabel: string): Promise<NoteRecord
     '*Start typing to replace this note.*',
   ].join('\n');
 
-  const created = await notesService.create({ title: 'Welcome to FlashPad', content, parentId: null, isMarkdown: true });
+  const created = await activeBackend.create({ title: 'Welcome to FlashPad', content, parentId: null, isMarkdown: true });
   notes.update((list) => [created, ...list]);
   focusedKey.set(`note:${created.id}`);
   return created;
@@ -270,7 +313,7 @@ export async function commitRename(key: string, value: string): Promise<{ id: nu
 
   const id = Number(key.slice('note:'.length));
   if (get(notes).find((n) => n.id === id)?.isLocked) return null;
-  const updated = await notesService.save({ id, title: trimmed });
+  const updated = await activeBackend.save({ id, title: trimmed });
   notes.update((list) => list.map((n) => (n.id === id ? updated : n)));
   return { id, updated };
 }
@@ -289,7 +332,7 @@ export function buildMoveTargetItems(onPick: (parentId: number | null) => void, 
 
 export async function moveNoteTo(id: number, parentId: number | null): Promise<boolean> {
   try {
-    const updated = await notesService.move(id, parentId);
+    const updated = await activeBackend.move(id, parentId);
     notes.update((list) => list.map((n) => (n.id === id ? updated : n)));
     if (get(selectedId) === id) activeParentId.set(parentId);
     status.set('Moved');
@@ -327,7 +370,7 @@ export async function handleTreeDrop(draggedId: number, targetId: number, zone: 
   }
 
   try {
-    await notesService.reorder(draggedId, parentId, beforeId);
+    await activeBackend.reorder(draggedId, parentId, beforeId);
     await refreshNotes();
     status.set('Reordered');
   } catch (err) {
@@ -352,7 +395,7 @@ export async function moveNoteOrder(id: number, direction: -1 | 1): Promise<void
   const beforeId = direction < 0 ? siblings[targetIndex].id : (siblings[targetIndex + 1]?.id ?? null);
 
   try {
-    await notesService.reorder(id, note.parentId, beforeId);
+    await activeBackend.reorder(id, note.parentId, beforeId);
     await refreshNotes();
     status.set('Reordered');
   } catch (err) {
@@ -378,7 +421,7 @@ export async function indentNote(id: number): Promise<void> {
   const newParent = siblings[index - 1];
 
   try {
-    await notesService.reorder(id, newParent.id, null);
+    await activeBackend.reorder(id, newParent.id, null);
     // The note would otherwise vanish from view if its new parent is
     // currently collapsed.
     expandedNotes.update((set) => (set.has(newParent.id) ? set : new Set(set).add(newParent.id)));
@@ -405,7 +448,7 @@ export async function outdentNote(id: number): Promise<void> {
   const beforeId = grandSiblings[parentIndex + 1]?.id ?? null;
 
   try {
-    await notesService.reorder(id, grandparentId, beforeId);
+    await activeBackend.reorder(id, grandparentId, beforeId);
     if (get(selectedId) === id) activeParentId.set(grandparentId);
     await refreshNotes();
     status.set('Moved out');
@@ -415,7 +458,7 @@ export async function outdentNote(id: number): Promise<void> {
 }
 
 export async function duplicateNote(id: number): Promise<NoteRecord> {
-  const created = await notesService.duplicate(id);
+  const created = await activeBackend.duplicate(id);
   notes.update((list) => [created, ...list]);
   status.set('Duplicated');
   return created;
@@ -425,7 +468,7 @@ export async function toggleLock(id: number): Promise<NoteRecord | null> {
   const note = get(notes).find((n) => n.id === id);
   if (!note) return null;
   const next = !note.isLocked;
-  const saved = await notesService.save({ id, isLocked: next });
+  const saved = await activeBackend.save({ id, isLocked: next });
   notes.update((list) => list.map((n) => (n.id === saved.id ? saved : n)));
   status.set(next ? 'Locked' : 'Unlocked');
   return saved;
@@ -446,7 +489,7 @@ export async function pasteNote(targetParentId: number | null): Promise<void> {
   if (!current) return;
   const { id, mode } = current;
   if (mode === 'copy') {
-    const created = await notesService.duplicate(id);
+    const created = await activeBackend.duplicate(id);
     notes.update((list) => [created, ...list]);
     await moveNoteTo(created.id, targetParentId);
   } else {
@@ -459,7 +502,7 @@ export async function deleteNote(id: number): Promise<{ removedSelected: boolean
   const descendantIds = collectDescendantNoteIds(id);
   const removedIds = new Set([id, ...descendantIds]);
 
-  await notesService.delete(id);
+  await activeBackend.delete(id);
   const remaining = get(notes).filter((n) => !removedIds.has(n.id));
   notes.set(remaining);
 
@@ -500,7 +543,7 @@ export async function toggleLineNumbers(id: number): Promise<NoteRecord | null> 
   const note = get(notes).find((n) => n.id === id);
   if (!note) return null;
   const next = !note.showLineNumbers;
-  const saved = await notesService.save({ id, showLineNumbers: next });
+  const saved = await activeBackend.save({ id, showLineNumbers: next });
   notes.update((list) => list.map((n) => (n.id === saved.id ? saved : n)));
   status.set(next ? 'Line numbers on' : 'Line numbers off');
   return saved;

@@ -10,7 +10,8 @@
     // Set only for cross-database search results (see App.svelte's
     // searchAllDatabases toggle) - undefined for notes in the active
     // database, which don't need a badge or a database switch to open.
-    databaseId?: number;
+    // number for a local profile id, string (a uuid) for a cloud notebook.
+    databaseId?: number | string;
     databaseName?: string;
   }
 
@@ -26,7 +27,7 @@
   export let draggingId: number | null = null;
   export let dropDisabledIds: Set<number> = new Set();
   export let onToggleExpand: (id: number) => void;
-  export let onSelectNote: (id: number, databaseId?: number) => void;
+  export let onSelectNote: (id: number, databaseId?: number | string) => void;
   export let onNoteContextMenu: (event: MouseEvent, noteId: number) => void;
   export let onFocusItem: (key: string) => void;
   export let onRenameCommit: (key: string, value: string) => void;

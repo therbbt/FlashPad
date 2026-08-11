@@ -28,6 +28,9 @@
   export let onClose: () => void;
   export let onSwitchDatabase: (id: number) => Promise<void>;
   export let onRequestConfirm: (message: string) => Promise<boolean>;
+  export let onSwitchCloudNotebook: (notebookId: string) => Promise<void>;
+  export let onSignOut: () => Promise<void>;
+  export let activeCloudNotebookId: string | null = null;
   // Runs the same check the startup flow uses. If it finds an update,
   // App.svelte takes over (opens the update dialog with the changelog) -
   // this component only needs the result to show "you're up to date" when
@@ -643,25 +646,34 @@
 
           <section class="card">
             <span class="section-title">All databases</span>
-            <DatabaseManagerSection onSwitch={onSwitchDatabase} {onRequestConfirm} />
+            <p class="hint">Local databases live on this device. Sign in to also sync notes across devices and share a notebook with friends via an invite code.</p>
+            <DatabaseManagerSection
+              onSwitch={onSwitchDatabase}
+              onSwitchCloud={onSwitchCloudNotebook}
+              {onSignOut}
+              {onRequestConfirm}
+              {activeCloudNotebookId}
+            />
           </section>
 
-          <section class="card">
-            <span class="section-title">Import notes</span>
-            <p class="hint">
-              Import a FlashNote export into the active database - folders become subnotes, .txt files become
-              notes.
-            </p>
-            <button class="btn" disabled={importingNotes} on:click={importNotes}>
-              {importingNotes ? 'Importing…' : 'Import from folder…'}
-            </button>
-            {#if importMessage}
-              <p class="saved-hint">{importMessage}</p>
-            {/if}
-            {#if importError}
-              <p class="error">{importError}</p>
-            {/if}
-          </section>
+          {#if !activeCloudNotebookId}
+            <section class="card">
+              <span class="section-title">Import notes</span>
+              <p class="hint">
+                Import a FlashNote export into the active database - folders become subnotes, .txt files become
+                notes.
+              </p>
+              <button class="btn" disabled={importingNotes} on:click={importNotes}>
+                {importingNotes ? 'Importing…' : 'Import from folder…'}
+              </button>
+              {#if importMessage}
+                <p class="saved-hint">{importMessage}</p>
+              {/if}
+              {#if importError}
+                <p class="error">{importError}</p>
+              {/if}
+            </section>
+          {/if}
         </div>
       {:else if tab === 'plugins'}
         <div class="pane">

@@ -18,6 +18,26 @@ export interface ImportSummary {
   firstNoteId: number | null;
 }
 
+// The subset of NotesService's shape every note CRUD/tree operation in
+// notesStore.ts (and the two autosave paths in App.svelte) actually needs.
+// CloudNotesService implements this same interface against Supabase instead
+// of Tauri, so notesStore.ts can swap between a local and a cloud database
+// without knowing which one it's talking to. Deliberately excludes
+// importFlashNoteFolder - that command reads files from disk via Tauri's
+// dialog+fs directly in Rust and stays local-only, never routed through a
+// polymorphic backend.
+export interface NotesBackend {
+  list(): Promise<NoteRecord[]>;
+  create(payload: { title?: string; content?: string; parentId?: number | null; isMarkdown?: boolean }): Promise<NoteRecord>;
+  save(note: { id: number; title?: string; content?: string; isMarkdown?: boolean; isLocked?: boolean; showLineNumbers?: boolean }): Promise<NoteRecord>;
+  saveChecklistToggle(id: number, content: string): Promise<NoteRecord>;
+  delete(id: number): Promise<void>;
+  move(id: number, parentId: number | null): Promise<NoteRecord>;
+  duplicate(id: number): Promise<NoteRecord>;
+  reorder(id: number, parentId: number | null, beforeId: number | null): Promise<NoteRecord>;
+  search(query: string): Promise<NoteRecord[]>;
+}
+
 const STORAGE_KEY = 'flashpad.notes';
 
 const isTauriRuntime = () => typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
@@ -34,7 +54,7 @@ const writeFallback = (notes: NoteRecord[]) => {
   }
 };
 
-export class NotesService {
+export class NotesService implements NotesBackend {
   async list(): Promise<NoteRecord[]> {
     if (!isTauriRuntime()) {
       return readFallback();

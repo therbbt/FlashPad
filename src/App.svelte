@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { NotesService, type NoteRecord } from './lib/services/notesService';
+  import type { NoteRecord } from './lib/services/notesService';
   import { SettingsService, type FlashPadSettings } from './lib/services/settingsService';
   import { DEFAULT_DARK_PALETTE_ID, DEFAULT_LIGHT_PALETTE_ID, applyPalette, getPalette } from './lib/theme/palettes';
   import { HotkeyService } from './lib/services/hotkeyService';
@@ -49,21 +49,28 @@
   import {
     databases,
     activeDatabaseId,
+    activeCloudNotebookId,
     startupError,
     searchAllDatabases,
+    hasSearchableOtherSources,
     otherDatabaseNotes,
     activeDatabaseName,
   } from './lib/stores/databaseStore';
   import * as databaseStore from './lib/stores/databaseStore';
+  import { authReadyPromise, session, signOut } from './lib/stores/authStore';
+  import * as cloudStore from './lib/stores/cloudStore';
+  import { notebooks as cloudNotebooks } from './lib/stores/cloudStore';
+  import { CloudNotesService } from './lib/services/cloudNotesService';
+  import { loadActiveSource, saveActiveSource, clearActiveSource, type ActiveSource } from './lib/utils/activeSource';
 
-  const notesService = new NotesService();
   const settingsService = new SettingsService();
   const hotkeyService = new HotkeyService();
   const databaseService = new DatabaseService();
 
   // A note from the active database (no databaseId) or from another one via
-  // the "search all databases" toggle (see searchableNotes below).
-  type SearchableNote = NoteRecord & { databaseId?: number; databaseName?: string };
+  // the "search all databases" toggle (see searchableNotes below). number
+  // for a local profile, string (a notebook uuid) for a cloud notebook.
+  type SearchableNote = NoteRecord & { databaseId?: number | string; databaseName?: string };
 
   // Each database has its own independent id sequence, so a plain
   // `note:${id}` key can collide between two different databases' notes
@@ -119,7 +126,7 @@
   // otherDatabaseNotes already carries databaseId/databaseName (from
   // CrossDatabaseNote), which a plain NoteRecord simply doesn't have, so
   // this stays a normal instant client-side filter either way.
-  $: searchableNotes = ($searchAllDatabases && $databases.length > 1 ? [...$notes, ...$otherDatabaseNotes] : $notes) as SearchableNote[];
+  $: searchableNotes = ($searchAllDatabases && $hasSearchableOtherSources ? [...$notes, ...$otherDatabaseNotes] : $notes) as SearchableNote[];
   $: searchResults = isSearching
     ? searchableNotes
         .filter((n) => `${n.title} ${n.content}`.toLowerCase().includes(normalizedQuery))
@@ -176,18 +183,76 @@
   };
 
   // Cycles to the next database in the list (wrapping around) - lets Alt+B
-  // switch databases without opening Settings first. A no-op with 0 or 1
-  // databases.
-  const cycleDatabase = () => {
-    if ($databases.length < 2) return;
-    const currentIndex = $databases.findIndex((db) => db.id === $activeDatabaseId);
-    const next = $databases[(currentIndex + 1) % $databases.length];
-    void switchToDatabase(next.id);
+  // switch databases without opening Settings first. Local profiles and
+  // cloud notebooks share one combined cycle order (local first, then
+  // cloud) - a no-op with fewer than 2 entries total. Re-fetches the local
+  // list fresh every time (a cheap local IPC call, not a network round
+  // trip) rather than trusting the possibly-stale `databases` store -
+  // DatabaseManagerSection maintains its own separate list while Settings
+  // is open and only syncs back into this store when Settings closes, so
+  // without this a database added mid-session wouldn't show up in the
+  // cycle order until Settings had been closed once. cloudNotebooks only
+  // reflects reality once cloudStore.refreshNotebooks() has run (App.svelte
+  // does this at boot when signed in, and CloudNotebooksSection does it
+  // whenever it's open), same caveat as hasSearchableOtherSources.
+  type CycleEntry = { kind: 'local'; id: number } | { kind: 'cloud'; id: string };
+  const cycleDatabase = async () => {
+    const freshLocal = await databaseService.listDatabases();
+    databases.set(freshLocal);
+    const combined: CycleEntry[] = [
+      ...freshLocal.map((db): CycleEntry => ({ kind: 'local', id: db.id })),
+      ...$cloudNotebooks.map((nb): CycleEntry => ({ kind: 'cloud', id: nb.id })),
+    ];
+    if (combined.length < 2) return;
+    const currentIndex = combined.findIndex((entry) =>
+      $activeCloudNotebookId != null ? entry.kind === 'cloud' && entry.id === $activeCloudNotebookId : entry.kind === 'local' && entry.id === $activeDatabaseId,
+    );
+    const next = combined[(currentIndex + 1) % combined.length];
+    if (next.kind === 'local') void switchToDatabase(next.id);
+    else void switchToCloudNotebook(next.id);
   };
 
   const switchToDatabase = async (id: number) => {
+    notesStore.useLocalNotesBackend();
+    activeCloudNotebookId.set(null);
+    saveActiveSource({ kind: 'local', id });
     const state = await databaseService.switchDatabase(id);
     await applyAppState(state, 'The selected database is unavailable.');
+  };
+
+  // Falls back to whichever local database is configured, used whenever a
+  // persisted or just-selected cloud notebook turns out to be unreachable
+  // (offline, membership revoked, notebook deleted) or the user isn't
+  // signed in - a non-blocking toast instead of the full-screen
+  // startupError banner, since local notes are still perfectly usable; only
+  // an actually-unreachable LOCAL database warrants that banner.
+  const fallBackToLocal = async (message: string) => {
+    clearActiveSource();
+    activeCloudNotebookId.set(null);
+    notesStore.useLocalNotesBackend();
+    const state = await databaseService.getAppState();
+    await applyAppState(state, 'The configured database is unavailable.');
+    showToast(message);
+  };
+
+  // Mirrors switchToDatabase for a cloud notebook instead of a local
+  // profile - see lib/utils/activeSource.ts for why the persisted selection
+  // is a tagged union of the two. A failed refreshNotes() (offline, RLS
+  // denies because membership was revoked, notebook deleted) falls back to
+  // local rather than leaving the UI stuck on a dead cloud notebook.
+  const switchToCloudNotebook = async (notebookId: string) => {
+    notesStore.setActiveNotesBackend(new CloudNotesService(notebookId));
+    activeCloudNotebookId.set(notebookId);
+    saveActiveSource({ kind: 'cloud', notebookId });
+    resetNoteScopedState();
+    try {
+      startupError.set(null);
+      await initializeNotes();
+    } catch (err) {
+      await fallBackToLocal(err instanceof Error ? err.message : 'That notebook is no longer available - showing local notes.');
+      return;
+    }
+    if ($searchAllDatabases) await databaseStore.refreshOtherDatabaseNotes();
   };
 
   const handleDatabaseReloaded = async (state: AppState) => {
@@ -197,6 +262,18 @@
   const retryStartup = async () => {
     const state = await databaseService.getAppState();
     await applyAppState(state, 'The configured database is unavailable.');
+  };
+
+  // Switches back to local (if a cloud notebook was active) before actually
+  // signing out, so the UI never briefly shows cloud notes against a dead
+  // session, then clears every cloud-scoped store.
+  const handleSignOut = async () => {
+    if ($activeCloudNotebookId != null) {
+      const local = $databases.find((db) => db.id === $activeDatabaseId) ?? $databases[0];
+      if (local) await switchToDatabase(local.id);
+    }
+    await signOut();
+    cloudStore.resetCloudState();
   };
 
   // ---------- note editor ----------
@@ -243,13 +320,21 @@
   // resetNoteScopedState (run by every other switch-database path) clears
   // the search box - that's the right default for Alt+B/manual switches,
   // just not for "I clicked a search result".
-  const openSearchResult = async (id: number, databaseId?: number) => {
-    if (databaseId != null && databaseId !== $activeDatabaseId) {
-      // switchToDatabase -> applyAppState already refreshes
-      // otherDatabaseNotes (when the toggle is on) as part of its normal
-      // post-switch sequence - no need to do it again here.
+  const openSearchResult = async (id: number, databaseId?: number | string) => {
+    const needsSwitch =
+      databaseId != null &&
+      (typeof databaseId === 'string' ? databaseId !== $activeCloudNotebookId : $activeCloudNotebookId != null || databaseId !== $activeDatabaseId);
+    if (needsSwitch) {
+      // switchToDatabase/switchToCloudNotebook -> applyAppState (or its own
+      // equivalent) already refreshes otherDatabaseNotes (when the toggle
+      // is on) as part of its normal post-switch sequence - no need to do
+      // it again here.
       const savedQuery = query;
-      await switchToDatabase(databaseId);
+      if (typeof databaseId === 'string') {
+        await switchToCloudNotebook(databaseId);
+      } else if (databaseId != null) {
+        await switchToDatabase(databaseId);
+      }
       query = savedQuery;
     }
     await openNote(id);
@@ -294,8 +379,8 @@
     // narrow exception that persists just the content, rather than the
     // general save, which rejects content changes on a locked note.
     const saved = isLockedActive
-      ? await notesService.saveChecklistToggle($selectedId, noteText)
-      : await notesService.save({ id: $selectedId, title, content: noteText });
+      ? await notesStore.saveChecklistToggle($selectedId, noteText)
+      : await notesStore.saveNote({ id: $selectedId, title, content: noteText });
     notesStore.applyUpdatedNote(saved);
     status.set('Saved');
   };
@@ -356,7 +441,7 @@
         plainEditorRef?.focus();
       }
     });
-    void notesService.save({ id: $selectedId, isMarkdown: next }).then((saved) => {
+    void notesStore.saveNote({ id: $selectedId, isMarkdown: next }).then((saved) => {
       notesStore.applyUpdatedNote(saved);
     });
   };
@@ -564,7 +649,7 @@
     draggingId: $draggingId,
     dropDisabledIds: $dropDisabledIds,
     onToggleExpand: notesStore.toggleExpand,
-    onSelectNote: (id: number, databaseId?: number) => void openSearchResult(id, databaseId),
+    onSelectNote: (id: number, databaseId?: number | string) => void openSearchResult(id, databaseId),
     onNoteContextMenu: openNoteMenu,
     onFocusItem: (key: string) => {
       focusedKey.set(key);
@@ -841,7 +926,7 @@
 
     if (event.altKey && event.key.toLowerCase() === 'b') {
       event.preventDefault();
-      cycleDatabase();
+      void cycleDatabase();
     }
 
     if (event.altKey && event.key.toLowerCase() === 't') {
@@ -924,6 +1009,25 @@
       await databaseService.init();
       hotkeySetting = await hotkeyService.get();
 
+      // Resolve the Supabase session before deciding anything below - a
+      // persisted cloud-notebook selection can only be resumed once it's
+      // known whether there's actually a session to resume it with.
+      await authReadyPromise;
+      const persistedSource = loadActiveSource();
+      // Best-effort, regardless of which source ends up active: populates
+      // the notebooks list for the Cloud settings tab and for
+      // hasSearchableOtherSources, without requiring Settings to be opened
+      // first.
+      if ($session) void cloudStore.refreshNotebooks().catch(() => {});
+
+      // Always populate the local database list/id, regardless of which
+      // source ends up active below - Alt+B cycling, the sidebar's active-
+      // database indicator, and Settings all read `databases` directly, and
+      // previously this only ran in the "local" branch, leaving that list
+      // empty/stale for the entire session whenever the app resumed
+      // straight into a cloud notebook (only backfilled once Settings
+      // happened to be opened and closed).
+      //
       // appState is only ever null outside Tauri (the browser-preview
       // fallback, which has no database concept at all) - deliberately NOT
       // routed through applyDatabaseState, which would treat null as an
@@ -936,10 +1040,27 @@
         databases.set(appState.databases);
         activeDatabaseId.set(appState.activeDatabaseId);
       }
-      if (appState && !appState.ready) {
-        startupError.set(appState.error ?? 'The configured database is unavailable.');
+
+      if (persistedSource?.kind === 'cloud' && $session) {
+        notesStore.setActiveNotesBackend(new CloudNotesService(persistedSource.notebookId));
+        activeCloudNotebookId.set(persistedSource.notebookId);
+        try {
+          await initializeNotes();
+        } catch (err) {
+          await fallBackToLocal(err instanceof Error ? err.message : 'That notebook is no longer available - showing local notes.');
+        }
       } else {
-        await initializeNotes();
+        if (persistedSource?.kind === 'cloud') {
+          // No session - can't silently resume a cloud notebook with no
+          // stored password.
+          clearActiveSource();
+        }
+
+        if (appState && !appState.ready) {
+          startupError.set(appState.error ?? 'The configured database is unavailable.');
+        } else {
+          await initializeNotes();
+        }
       }
     } catch (err) {
       console.error('FlashPad failed to initialize', err);
@@ -1175,6 +1296,9 @@
     }}
     initialTab={settingsInitialTab}
     onSwitchDatabase={switchToDatabase}
+    onSwitchCloudNotebook={switchToCloudNotebook}
+    onSignOut={handleSignOut}
+    activeCloudNotebookId={$activeCloudNotebookId}
     onRequestConfirm={confirmDialog}
     onImported={async () => {
       startupError.set(null);
