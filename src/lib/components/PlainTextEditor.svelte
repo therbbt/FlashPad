@@ -16,8 +16,6 @@
   import { vim, getCM } from '@replit/codemirror-vim';
   import { vimModeIndicator } from '../stores/vimModeIndicator';
   import { toLfNewlines } from '../utils/clipboard';
-  import { detectLanguage, type LanguageId } from '../utils/languageDetect';
-  import { formatText } from '../utils/formatCode';
 
   export let content: string;
   export let noteId: number;
@@ -26,11 +24,6 @@
   export let editable = true;
   export let showLineNumbers = false;
   export let vimMode = false;
-  // The note's persisted editor-mode language override (see
-  // EditorModeEditor.svelte) - Format uses this (falling back to
-  // auto-detection) even here in the plain view, so a note's language
-  // choice applies consistently no matter which view you format it from.
-  export let language: string | null = null;
 
   let container: HTMLDivElement;
   let view: EditorView | undefined;
@@ -254,18 +247,25 @@
     view.focus();
   }
 
-  // Formats just the current selection if there is one, otherwise the
-  // whole note - see formatCode.ts for the language-aware/tidy-up split.
-  export async function format(): Promise<void> {
-    if (!view) return;
+  // Used by the right-click menu (App.svelte's openEditorMenu) to decide
+  // whether Copy/Cut should act on the OS clipboard (a real selection) or
+  // fall back to FlashPad's own note-level tree clipboard (nothing selected).
+  export function getSelectedText(): string {
+    if (!view) return '';
     const { from, to } = view.state.selection.main;
-    const hasSelection = from !== to;
-    const range = hasSelection ? { from, to } : { from: 0, to: view.state.doc.length };
-    const source = view.state.doc.sliceString(range.from, range.to);
-    const effectiveLanguage = (language as LanguageId | null) ?? detectLanguage(content);
-    const formatted = await formatText(source, effectiveLanguage);
-    if (formatted === source) return;
-    view.dispatch({ changes: { from: range.from, to: range.to, insert: formatted } });
+    return view.state.sliceDoc(from, to);
+  }
+
+  // Deletes the current selection and returns the text that was removed
+  // ('' if there was no selection) - the caller is responsible for putting
+  // the result on the OS clipboard.
+  export function cutSelection(): string {
+    if (!view) return '';
+    const { from, to } = view.state.selection.main;
+    if (from === to) return '';
+    const text = view.state.sliceDoc(from, to);
+    view.dispatch({ changes: { from, to, insert: '' } });
+    return text;
   }
 </script>
 

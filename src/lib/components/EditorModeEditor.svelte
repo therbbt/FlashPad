@@ -9,7 +9,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { EditorState, Compartment } from '@codemirror/state';
   import { EditorView, keymap, lineNumbers, drawSelection, placeholder as placeholderExt } from '@codemirror/view';
-  import { defaultKeymap, historyKeymap, history } from '@codemirror/commands';
+  import { defaultKeymap, historyKeymap, indentWithTab, history } from '@codemirror/commands';
   import { search, searchKeymap, openSearchPanel, closeSearchPanel, searchPanelOpen } from '@codemirror/search';
   import type { LanguageSupport } from '@codemirror/language';
   import { vim, getCM } from '@replit/codemirror-vim';
@@ -170,7 +170,12 @@
           // pushed note text down and felt disconnected from the rest of
           // the app's UI.
           search({ top: false }),
-          keymap.of([...defaultKeymap, ...historyKeymap, ...editorSearchKeymap]),
+          // CodeMirror deliberately leaves Tab unbound by default (so it
+          // falls through to the browser's normal focus-navigation) unless
+          // indentWithTab is added explicitly - in a real code/config
+          // editor, Tab indenting the text is the expected behavior
+          // (matches VSCode etc.), so it's opted back in here.
+          keymap.of([...defaultKeymap, ...historyKeymap, ...editorSearchKeymap, indentWithTab]),
           drawSelection(),
           lineDisplayCompartment.of(lineDisplayExtensions(showLineNumbers)),
           editableCompartment.of(editableExtensions(editable)),
@@ -241,6 +246,27 @@
 
   export function openSearch() {
     if (view) toggleSearch(view);
+  }
+
+  // Used by the right-click menu (App.svelte's openEditorMenu) to decide
+  // whether Copy/Cut should act on the OS clipboard (a real selection) or
+  // fall back to FlashPad's own note-level tree clipboard (nothing selected).
+  export function getSelectedText(): string {
+    if (!view) return '';
+    const { from, to } = view.state.selection.main;
+    return view.state.sliceDoc(from, to);
+  }
+
+  // Deletes the current selection and returns the text that was removed
+  // ('' if there was no selection) - the caller is responsible for putting
+  // the result on the OS clipboard.
+  export function cutSelection(): string {
+    if (!view) return '';
+    const { from, to } = view.state.selection.main;
+    if (from === to) return '';
+    const text = view.state.sliceDoc(from, to);
+    view.dispatch({ changes: { from, to, insert: '' } });
+    return text;
   }
 
   // Formats just the current selection if there is one, otherwise the

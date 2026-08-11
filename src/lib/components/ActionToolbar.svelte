@@ -8,13 +8,10 @@
   export let onShowMarkdownHelp: () => void;
   export let onShowShortcuts: () => void;
   export let onShowSettings: () => void;
-  // Always available (Alt+F) regardless of markdown/plain/editor mode -
-  // unlike the Markdown-guide button below, this isn't gated on
-  // isMarkdownActive.
+  // Format and search/replace only exist in editor mode's CodeMirror view -
+  // both gated on editorModeEnabled, the same way the Markdown-guide button
+  // below is gated on isMarkdownActive.
   export let onFormat: () => void;
-  // Search/replace only exists in editor mode's CodeMirror view - gated on
-  // editorModeEnabled the same way the Markdown-guide button is gated on
-  // isMarkdownActive.
   export let editorModeEnabled = false;
   export let onSearch: () => void;
 
@@ -44,14 +41,14 @@
   </button>
 
   <div class="toolbar-right">
-    <button class="toolbar-btn" on:click={onFormat} aria-label="Format (Alt+F)" title="Format (Alt+F)">
-      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M2 3h12M2 8h8M2 13h5" />
-      </svg>
-      <span>Format</span>
-    </button>
-
     {#if editorModeEnabled}
+      <button class="toolbar-btn" on:click={onFormat} aria-label="Format (Alt+F)" title="Format (Alt+F)">
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2 3h12M2 8h8M2 13h5" />
+        </svg>
+        <span>Format</span>
+      </button>
+
       <button class="toolbar-btn" on:click={onSearch} aria-label="Search (Ctrl/Cmd+F)" title="Search (Ctrl/Cmd+F)">
         <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="7" cy="7" r="4.5" />

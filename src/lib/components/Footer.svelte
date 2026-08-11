@@ -15,11 +15,9 @@
   export let searchMatchIndex: number;
   export let isMarkdownActive: boolean;
   export let isLockedActive: boolean;
-  export let isEditorModeActive: boolean;
   export let onSearchKeydown: (event: KeyboardEvent) => void;
   export let onGoToSearchMatch: (direction: 1 | -1) => void;
   export let onToggleMarkdown: () => void;
-  export let onToggleEditorMode: () => void;
 </script>
 
 <footer class="footer" on:contextmenu|preventDefault>
@@ -81,16 +79,6 @@
     aria-pressed={isMarkdownActive}
   >
     Markdown
-  </button>
-  <button
-    class="md-toggle"
-    class:active={isEditorModeActive}
-    on:click={onToggleEditorMode}
-    disabled={$selectedId == null || isLockedActive}
-    aria-pressed={isEditorModeActive}
-    title="Editor mode (Alt+E) - syntax highlighting, search/replace, formatting"
-  >
-    Editor mode
   </button>
   <div class="footer-right">
     {#if $vimModeIndicator}

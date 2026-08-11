@@ -28,7 +28,7 @@
   import { getEditorContextMenuItemsFor, activePluginForm, activePluginMessage, type EditorContext } from './lib/plugins/pluginApi';
   import { ensurePluginsDirExists, loadEnabledPlugins } from './lib/plugins/pluginLoader';
   import { check as checkForUpdate, type Update } from '@tauri-apps/plugin-updater';
-  import { writeText as writeClipboardText } from '@tauri-apps/plugin-clipboard-manager';
+  import { writeText as writeClipboardText, readText } from '@tauri-apps/plugin-clipboard-manager';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { isAllowedLinkUrl } from './lib/utils/links';
   import { resolveEffectiveLanguage } from './lib/utils/languageDetect';
@@ -470,10 +470,14 @@
   // the current selection if there is one, otherwise the whole note. The
   // resulting edit flows back through that editor's normal onUpdate wiring
   // (same as typing), so it autosaves the same way any other edit does.
+  // Editor-mode only: PlainTextEditor/MarkdownEditor don't implement
+  // format() (and Alt+F/the toolbar button are hidden outside editor mode
+  // to match), since Format only makes sense against the syntax-highlighted
+  // CodeMirror view.
   const formatActiveNote = async () => {
-    if ($selectedId == null || isLockedActive) return;
+    if ($selectedId == null || isLockedActive || !isEditorModeActive) return;
     try {
-      await activeTextEditorRef()?.format();
+      await editorModeEditorRef?.format();
       status.set('Formatted');
     } catch (err) {
       status.set(err instanceof Error ? err.message : 'Format failed');
@@ -626,6 +630,9 @@
         { label: 'Duplicate', action: () => void duplicateNote(noteId) },
         { label: 'Move to…', submenu: notesStore.buildMoveTargetItems((target) => void notesStore.moveNoteTo(noteId, target), noteId) },
         { label: '', separator: true },
+        { label: 'Copy', action: () => notesStore.copyNote(noteId) },
+        { label: 'Cut', action: () => notesStore.cutNote(noteId) },
+        { label: '', separator: true },
         { label: locked ? 'Unlock' : 'Lock', action: () => void toggleLock(noteId) },
         { label: '', separator: true },
         { label: 'Delete', danger: true, action: () => void deleteNoteById(noteId) },
@@ -633,9 +640,11 @@
     };
   };
 
-  const openEditorMenu = (event: MouseEvent) => {
+  const openEditorMenu = async (event: MouseEvent) => {
     if ($selectedId == null) return;
     const id = $selectedId;
+    const x = event.clientX;
+    const y = event.clientY;
     // Plugins (contextMenu.registerEditorItem) get the same context object
     // this menu itself uses for the link check below - only the Markdown
     // editor can compute one (links/task items only exist there), so a
@@ -649,9 +658,31 @@
       action: () => item.action(pluginContext),
     }));
 
+    // Text-only: Copy/Cut/Paste here act purely on selected text and the OS
+    // clipboard, like a normal text editor's right-click menu - never on
+    // whole-note move/duplicate (that's what right-clicking the note itself
+    // in the sidebar, and drag-and-drop, are for - see openNoteMenu's "Move
+    // to…"). Disabled rather than falling back to a note-level operation
+    // when there's nothing to act on, so this menu never has a surprise
+    // side effect on the sidebar tree.
+    const selectedText = activeTextEditorRef()?.getSelectedText() ?? '';
+    const copySelection = () => void writeClipboardText(selectedText);
+    const cutSelection = () => {
+      // Locked notes can't have their content edited - fall back to a
+      // non-destructive copy rather than silently failing to delete.
+      if (isLockedActive) {
+        void writeClipboardText(selectedText);
+        return;
+      }
+      const cutText = activeTextEditorRef()?.cutSelection() ?? '';
+      if (cutText) void writeClipboardText(cutText);
+    };
+    const osClipboardText = (await readText().catch(() => null)) ?? '';
+    const pasteSelection = () => insertAtCursor(osClipboardText);
+
     contextMenu = {
-      x: event.clientX,
-      y: event.clientY,
+      x,
+      y,
       items: [
         ...(linkHref
           ? [
@@ -660,9 +691,9 @@
               { label: '', separator: true },
             ]
           : []),
-        { label: 'Copy', action: () => notesStore.copyNote(id) },
-        { label: 'Cut', action: () => notesStore.cutNote(id) },
-        { label: 'Paste', disabled: $clipboard == null, action: () => void notesStore.pasteNote(id) },
+        { label: 'Copy', disabled: !selectedText, action: copySelection },
+        { label: 'Cut', disabled: !selectedText, action: cutSelection },
+        { label: 'Paste', disabled: !osClipboardText, action: pasteSelection },
         { label: '', separator: true },
         { label: isLockedActive ? 'Unlock' : 'Lock', action: () => void toggleLock(id) },
         ...(pluginMenuItems.length ? [{ label: '', separator: true }, ...pluginMenuItems] : []),
@@ -805,11 +836,14 @@
     await reloadPlugins();
   };
 
-  // Per-note, toggled via Alt+R - not gated on isLockedActive, since this is
-  // a display preference rather than an edit to the note's protected text
-  // (and update_note's lock guard only rejects title/content changes
-  // anyway, so this always goes through even on a locked note).
+  // Per-note, toggled via Alt+R - Editor mode only (same treatment as
+  // Format/Alt+F), since the line-number gutter is a CodeMirror-view
+  // concern. Not gated on isLockedActive, since this is a display
+  // preference rather than an edit to the note's protected text (and
+  // update_note's lock guard only rejects title/content changes anyway, so
+  // this always goes through even on a locked note).
   const toggleLineNumbers = async (id: number) => {
+    if (!isEditorModeActive) return;
     const saved = await notesStore.toggleLineNumbers(id);
     if (saved && $selectedId === id) showLineNumbersActive = saved.showLineNumbers;
   };
@@ -1296,7 +1330,6 @@
           placeholder="Start typing instantly..."
           editable={!isLockedActive}
           vimMode={vimModeEnabled}
-          language={selectedNoteLanguage}
         />
       {:else}
         <PlainTextEditor
@@ -1308,7 +1341,6 @@
           editable={!isLockedActive}
           showLineNumbers={showLineNumbersActive}
           vimMode={vimModeEnabled}
-          language={selectedNoteLanguage}
         />
       {/if}
     </div>
@@ -1320,13 +1352,9 @@
       {searchMatchIndex}
       {isMarkdownActive}
       {isLockedActive}
-      {isEditorModeActive}
       onSearchKeydown={handleTreeKeydown}
       onGoToSearchMatch={goToSearchMatch}
       onToggleMarkdown={toggleMarkdown}
-      onToggleEditorMode={() => {
-        if ($selectedId != null) void toggleEditorMode($selectedId);
-      }}
     />
   </section>
   </div>

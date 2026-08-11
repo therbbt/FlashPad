@@ -16,8 +16,6 @@
   import { readDroppedImage } from '../services/imagesService';
   import { vimModeIndicator } from '../stores/vimModeIndicator';
   import type { EditorContext } from '../plugins/pluginApi';
-  import type { LanguageId } from '../utils/languageDetect';
-  import { formatText } from '../utils/formatCode';
 
   const isTauriRuntime = () => typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 
@@ -33,9 +31,6 @@
   export let placeholder = '';
   export let editable = true;
   export let vimMode = false;
-  // The note's persisted editor-mode language override - Format uses this
-  // (falling back to auto-detection of the markdown source) even here.
-  export let language: string | null = null;
 
   let element: HTMLDivElement;
   let editor: Editor | undefined;
@@ -293,30 +288,36 @@
     editor?.chain().focus().run();
   }
 
-  // Whole-note only, unlike PlainTextEditor/EditorModeEditor's
-  // selection-aware format(): mapping a rich-text selection back to a
-  // range in the underlying markdown source reliably is a much bigger,
-  // fragile problem than it is for a plain CodeMirror doc, so this always
-  // reformats the entire note's markdown source instead.
-  export async function format(): Promise<void> {
-    if (!editor) return;
-    const source: string = editor.storage.markdown.getMarkdown();
-    // Already known to be markdown by virtue of being in this editor - no
-    // need to run content-sniffing detection the way the other two editors
-    // do, unless the note has an explicit override (e.g. someone pinned a
-    // markdown note's language to something else before switching views).
-    const effectiveLanguage = (language as LanguageId | null) ?? 'markdown';
-    const formatted = await formatText(source, effectiveLanguage);
-    if (formatted === source) return;
-    editor.commands.setContent(formatted, true);
-  }
-
   // Alt+O - returns the href of the link at the caret, or null if there
   // isn't one, so App.svelte can hand it to the same open+validate path
   // used by clicking and the context menu.
   export function getLinkHrefAtCursor(): string | null {
     if (!editor?.isActive('link')) return null;
     return (editor.getAttributes('link').href as string | undefined) ?? null;
+  }
+
+  // Used by the right-click menu (App.svelte's openEditorMenu) to decide
+  // whether Copy/Cut should act on the OS clipboard (a real selection) or
+  // fall back to FlashPad's own note-level tree clipboard (nothing
+  // selected). Same textBetween call getContext() already uses for
+  // selectionText - kept as its own method so App.svelte doesn't need a
+  // synthetic MouseEvent just to ask "is anything selected right now".
+  export function getSelectedText(): string {
+    if (!editor) return '';
+    const { from, to } = editor.state.selection;
+    return from !== to ? editor.state.doc.textBetween(from, to, '\n') : '';
+  }
+
+  // Deletes the current selection and returns the text that was removed
+  // ('' if there was no selection) - the caller is responsible for putting
+  // the result on the OS clipboard.
+  export function cutSelection(): string {
+    if (!editor) return '';
+    const { from, to } = editor.state.selection;
+    if (from === to) return '';
+    const text = editor.state.doc.textBetween(from, to, '\n');
+    editor.commands.deleteSelection();
+    return text;
   }
 
   // Appends " " + label as a link to the to-do row whose taskItem node
