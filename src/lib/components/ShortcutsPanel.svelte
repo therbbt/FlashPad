@@ -31,6 +31,7 @@
         ['Alt+1', 'Insert a divider line'],
         ['Alt+2', 'Insert a timestamp'],
         ['Alt+3', 'Insert a dateline'],
+        ['Alt+C', 'Wrap the selection in inline code (or start typing code with nothing selected)'],
       ] as [string, string][],
     },
     {
@@ -68,7 +69,7 @@
     {
       label: 'Mouse & renaming',
       items: [
-        ['Right-click a note', 'New subnote, rename, duplicate, move, copy/cut/paste, lock, delete'],
+        ['Right-click a note', 'New subnote, rename, duplicate, move, copy/cut/paste, export to .txt, lock, delete'],
         ['Right-click the text', 'Copy/cut the selection, paste, lock / unlock'],
         ['Enter / Esc', 'While renaming: confirm / cancel'],
       ] as [string, string][],

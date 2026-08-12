@@ -3,7 +3,22 @@
 // don't look like any of the others (including genuinely unstructured text
 // like a network switch config) land here, with monospace-only styling and
 // no attempted syntax highlighting or structural reformatting.
-export type LanguageId = 'json' | 'javascript' | 'css' | 'html' | 'xml' | 'yaml' | 'markdown' | 'python' | 'sql' | 'shell' | 'plain';
+export type LanguageId =
+  | 'json'
+  | 'javascript'
+  | 'css'
+  | 'html'
+  | 'xml'
+  | 'yaml'
+  | 'markdown'
+  | 'python'
+  | 'sql'
+  | 'shell'
+  | 'cisco-ios'
+  | 'huawei-vrp'
+  | 'nokia-sros'
+  | 'adva'
+  | 'plain';
 
 export const LANGUAGE_OPTIONS: { id: LanguageId; label: string }[] = [
   { id: 'plain', label: 'Plain / auto' },
@@ -17,6 +32,10 @@ export const LANGUAGE_OPTIONS: { id: LanguageId; label: string }[] = [
   { id: 'python', label: 'Python' },
   { id: 'sql', label: 'SQL' },
   { id: 'shell', label: 'Shell' },
+  { id: 'cisco-ios', label: 'Cisco IOS' },
+  { id: 'huawei-vrp', label: 'Huawei VRP' },
+  { id: 'nokia-sros', label: 'Nokia SR OS' },
+  { id: 'adva', label: 'ADVA' },
 ];
 
 // A cheap content-sniffing heuristic, not a real language classifier -
@@ -50,6 +69,19 @@ export function detectLanguage(content: string): LanguageId {
   if (/^\s*(def\s|import\s|from\s.+\simport\s|class\s.+:)/m.test(trimmed)) return 'python';
 
   if (/^\s*(select|insert\s+into|update\s|delete\s+from|create\s+table)\b/im.test(trimmed)) return 'sql';
+
+  // Network device configs - each check keys off a command/phrase that's
+  // near-unique to that vendor's CLI, based on real running-config output
+  // (not just documentation): ADVA's bare "home" command and noun-taking
+  // "configure <x>" lines; Nokia SR OS classic CLI's bare "configure" block
+  // opener and "exit all"; Huawei VRP's "sysname"/"undo"/"vlan batch"; Cisco
+  // IOS's "hostname"/"switchport"/"spanning-tree". Checked ahead of 'plain'
+  // but after every real grammar above, since none of these phrases can
+  // plausibly appear in JSON/JS/Python/SQL/etc.
+  if (/^\s*home\s*$/m.test(trimmed) && /^configure\s+\S/m.test(trimmed)) return 'adva';
+  if (/^configure\s*$/m.test(trimmed) || /^\s*exit all\s*$/m.test(trimmed)) return 'nokia-sros';
+  if (/^sysname\s/m.test(trimmed) || /^\s*undo\s/m.test(trimmed) || /^vlan batch\b/m.test(trimmed) || /^\s*port link-type\b/m.test(trimmed)) return 'huawei-vrp';
+  if (/^hostname\s/m.test(trimmed) || /^\s*switchport\b/m.test(trimmed) || /^\s*spanning-tree\b/m.test(trimmed) || /^\s*channel-group\b/m.test(trimmed) || /^line (vty|con|aux)\s/m.test(trimmed)) return 'cisco-ios';
 
   return 'plain';
 }

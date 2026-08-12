@@ -28,6 +28,10 @@ export class BackupService {
     await invoke('export_database', { destPath });
   }
 
+  async exportNoteText(destPath: string, content: string): Promise<void> {
+    await invoke('export_note_text', { destPath, content });
+  }
+
   // The backend takes an automatic pre-import safety backup before touching
   // anything and validates the file is really a FlashPad database - the
   // frontend's job is only to warn the user this replaces their current

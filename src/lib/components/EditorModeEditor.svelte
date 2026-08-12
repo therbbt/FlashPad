@@ -23,6 +23,8 @@
   import { python } from '@codemirror/lang-python';
   import { sql } from '@codemirror/lang-sql';
   import { codeEditorTheme } from '../theme/codeEditorTheme';
+  import { NETWORK_CONFIG_LANGUAGE_SUPPORT } from '../theme/networkConfigLanguage';
+  import { MARKDOWN_CODE_LANGUAGES, INLINE_CODE_SHELL_EXTENSION } from '../theme/markdownCodeLanguages';
   import { resolveEffectiveLanguage, type LanguageId } from '../utils/languageDetect';
   import { formatText } from '../utils/formatCode';
   import { vimModeIndicator } from '../stores/vimModeIndicator';
@@ -69,9 +71,13 @@
     html,
     xml,
     yaml,
-    markdown,
+    // Overrides the bare `markdown` import - codeLanguages lets fenced code
+    // blocks (```js, ```bash, ...) delegate to their own real grammar
+    // instead of rendering as plain unhighlighted text.
+    markdown: () => markdown({ codeLanguages: MARKDOWN_CODE_LANGUAGES, extensions: [INLINE_CODE_SHELL_EXTENSION] }),
     python,
     sql,
+    ...NETWORK_CONFIG_LANGUAGE_SUPPORT,
   };
 
   // 'shell' and 'plain' (and anything unrecognized) get no LanguageSupport
@@ -175,7 +181,14 @@
           // indentWithTab is added explicitly - in a real code/config
           // editor, Tab indenting the text is the expected behavior
           // (matches VSCode etc.), so it's opted back in here.
-          keymap.of([...defaultKeymap, ...historyKeymap, ...editorSearchKeymap, indentWithTab]),
+          // Alt-c bound here (rather than left to bubble up to App.svelte's
+          // window keydown handler) for the same reason Ctrl+F is handled
+          // entirely inside CodeMirror's own keymap already - Alt-key
+          // combos aren't reliably delivered to a window-level listener
+          // from inside this editable surface in the actual Tauri/
+          // WebKitGTK build, only to a keymap registered on the editor
+          // itself.
+          keymap.of([{ key: 'Alt-c', run: () => { insertInlineCode(); return true; }, preventDefault: true }, ...defaultKeymap, ...historyKeymap, ...editorSearchKeymap, indentWithTab]),
           drawSelection(),
           lineDisplayCompartment.of(lineDisplayExtensions(showLineNumbers)),
           editableCompartment.of(editableExtensions(editable)),
@@ -241,6 +254,29 @@
       selection: { anchor: from + text.length },
       scrollIntoView: true,
     });
+    view.focus();
+  }
+
+  // Alt+C - wraps the current selection in backticks (inline code), or
+  // inserts an empty pair with the cursor placed between them if nothing
+  // is selected, so typing can continue immediately.
+  export function insertInlineCode() {
+    if (!view || !editable) return;
+    const { from, to } = view.state.selection.main;
+    if (from === to) {
+      view.dispatch({
+        changes: { from, insert: '``' },
+        selection: { anchor: from + 1 },
+        scrollIntoView: true,
+      });
+    } else {
+      const text = view.state.sliceDoc(from, to);
+      view.dispatch({
+        changes: { from, to, insert: `\`${text}\`` },
+        selection: { anchor: from + 1, head: from + 1 + text.length },
+        scrollIntoView: true,
+      });
+    }
     view.focus();
   }
 

@@ -9,12 +9,15 @@
   import Placeholder from '@tiptap/extension-placeholder';
   import TaskList from '@tiptap/extension-task-list';
   import TaskItem from '@tiptap/extension-task-item';
+  import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
   import { Markdown } from 'tiptap-markdown';
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { isAllowedLinkUrl } from '../utils/links';
   import { isAllowedImageMimeType, isAllowedImagePath } from '../utils/images';
   import { readDroppedImage } from '../services/imagesService';
   import { vimModeIndicator } from '../stores/vimModeIndicator';
+  import { markdownCodeBlockLowlight } from '../theme/markdownCodeBlockLanguages';
+  import { InlineCodeHighlight } from '../theme/inlineCodeHighlight';
   import type { EditorContext } from '../plugins/pluginApi';
 
   const isTauriRuntime = () => typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
@@ -31,6 +34,12 @@
   export let placeholder = '';
   export let editable = true;
   export let vimMode = false;
+  // Which fixed light/dark code-token color set fenced code blocks use
+  // (see the .hljs-* rules below) - same values as Editor mode's
+  // codeEditorTheme.ts, so a note looks the same whether or not Editor
+  // mode is on. Not tied to the app's multi-palette system, same reasoning
+  // as codeEditorTheme.ts itself.
+  export let themeMode: 'light' | 'dark' = 'dark';
 
   let element: HTMLDivElement;
   let editor: Editor | undefined;
@@ -279,9 +288,36 @@
     },
   });
 
+  // Bound as a real ProseMirror keyboard shortcut (rather than left to
+  // bubble up to App.svelte's window keydown handler, like most other Alt+
+  // shortcuts) for the same reason Ctrl+F is handled entirely inside
+  // CodeMirror's own keymap in the other two editors - Alt-key combos
+  // aren't reliably delivered to a window-level listener from inside this
+  // editable surface in the actual Tauri/WebKitGTK build, only to a
+  // shortcut registered on the editor itself.
+  const InlineCodeShortcut = Extension.create({
+    name: 'inlineCodeShortcut',
+    addKeyboardShortcuts() {
+      return { 'Alt-c': () => (editable ? this.editor.commands.toggleCode() : false) };
+    },
+  });
+
   export function insertAtCursor(text: string) {
     if (!editable) return;
     editor?.chain().focus().insertContent(text).run();
+  }
+
+  // Alt+C - toggles the inline `code` mark on the current selection (or
+  // starts/stops typing in code style with nothing selected), same as
+  // Bold/Italic's own toggle behavior. Unlike the CodeMirror editors'
+  // insertInlineCode(), this doesn't insert literal backtick characters -
+  // Markdown view is rich text, so the mark itself is what renders as
+  // inline code (tiptap-markdown serializes it back to `` `code` `` on
+  // save). Exported for API symmetry with the other two editors, though the
+  // actual Alt+C keypress is handled by InlineCodeShortcut above, not this.
+  export function insertInlineCode() {
+    if (!editable) return;
+    editor?.chain().focus().toggleCode().run();
   }
 
   export function focus() {
@@ -607,10 +643,15 @@
         // same precedence requirement as the plain-text editor's "vim must
         // come before other keymaps".
         VimLite,
+        InlineCodeShortcut,
         // link: false - StarterKit bundles its own Link instance under the
         // same "link" mark name, which would otherwise collide with the
-        // configured one below.
-        StarterKit.configure({ link: false }),
+        // configured one below. codeBlock: false - same collision, this
+        // time with CodeBlockLowlight below (real per-language token
+        // highlighting instead of StarterKit's plain, unhighlighted one).
+        StarterKit.configure({ link: false, codeBlock: false }),
+        CodeBlockLowlight.configure({ lowlight: markdownCodeBlockLowlight }),
+        InlineCodeHighlight,
         Link.configure({
           // We own opening links ourselves (see handleLinkClick above) so
           // plain clicks in an editable note still just place the caret -
@@ -707,7 +748,7 @@
   });
 </script>
 
-<div class="markdown-editor" bind:this={element}></div>
+<div class="markdown-editor" class:dark-code={themeMode === 'dark'} bind:this={element}></div>
 
 <style>
   .markdown-editor {
@@ -769,21 +810,130 @@
 
   .markdown-editor :global(.tiptap code) {
     background: var(--panel-2);
+    border: 1px solid var(--border);
     border-radius: 0.25rem;
-    padding: 0.1em 0.3em;
+    padding: 0.1em 0.4em;
     font-size: 0.9em;
+    /* Explicit rather than relying on the browser's default UA styling for
+       <code> - not guaranteed consistent, and this matches the monospace
+       stack Editor mode's own code view already uses. Without this, typing
+       backtick-wrapped text just silently loses its backticks with nothing
+       visually marking it as code. */
+    font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   }
 
   .markdown-editor :global(.tiptap pre) {
     background: var(--panel-2);
+    border: 1px solid var(--border);
     border-radius: 0.4rem;
     padding: 0.6em 0.8em;
     overflow-x: auto;
+    font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   }
 
   .markdown-editor :global(.tiptap pre code) {
     background: none;
+    border: none;
     padding: 0;
+  }
+
+  /* CodeBlockLowlight's token classes (see markdownCodeBlockLanguages.ts),
+     mapped to the exact same fixed light/dark colors as Editor mode's
+     codeEditorTheme.ts - so a fenced code block looks the same whether or
+     not Editor mode is on, rather than going flat the moment it's off.
+     hljs's class set doesn't line up 1:1 with CodeMirror's Lezer tags, so
+     this is a best-effort grouping (e.g. hljs-built_in/hljs-title.class_
+     land on the same "type-like" color CodeMirror uses for typeName). */
+  .markdown-editor :global(.tiptap .hljs-keyword),
+  .markdown-editor :global(.tiptap .hljs-selector-tag) {
+    color: #8959a8;
+  }
+  .markdown-editor :global(.tiptap .hljs-name),
+  .markdown-editor :global(.tiptap .hljs-tag) {
+    color: #c82829;
+  }
+  .markdown-editor :global(.tiptap .hljs-title),
+  .markdown-editor :global(.tiptap .hljs-attr),
+  .markdown-editor :global(.tiptap .hljs-attribute),
+  .markdown-editor :global(.tiptap .hljs-property),
+  .markdown-editor :global(.tiptap .hljs-variable),
+  .markdown-editor :global(.tiptap .hljs-params) {
+    color: #4271ae;
+  }
+  .markdown-editor :global(.tiptap .hljs-built_in),
+  .markdown-editor :global(.tiptap .hljs-type),
+  .markdown-editor :global(.tiptap .hljs-number),
+  .markdown-editor :global(.tiptap .hljs-literal) {
+    color: #b5651d;
+  }
+  .markdown-editor :global(.tiptap .hljs-symbol),
+  .markdown-editor :global(.tiptap .hljs-bullet),
+  .markdown-editor :global(.tiptap .hljs-link),
+  .markdown-editor :global(.tiptap .hljs-operator),
+  .markdown-editor :global(.tiptap .hljs-meta) {
+    color: #3e999f;
+  }
+  .markdown-editor :global(.tiptap .hljs-comment),
+  .markdown-editor :global(.tiptap .hljs-quote) {
+    color: #8e908c;
+    font-style: italic;
+  }
+  .markdown-editor :global(.tiptap .hljs-string),
+  .markdown-editor :global(.tiptap .hljs-doctag),
+  .markdown-editor :global(.tiptap .hljs-addition) {
+    color: #718c00;
+  }
+  .markdown-editor :global(.tiptap .hljs-deletion) {
+    color: #c82829;
+  }
+  .markdown-editor :global(.tiptap .hljs-emphasis) {
+    font-style: italic;
+  }
+  .markdown-editor :global(.tiptap .hljs-strong) {
+    font-weight: bold;
+  }
+
+  .markdown-editor.dark-code :global(.tiptap .hljs-keyword),
+  .markdown-editor.dark-code :global(.tiptap .hljs-selector-tag) {
+    color: #c792ea;
+  }
+  .markdown-editor.dark-code :global(.tiptap .hljs-name),
+  .markdown-editor.dark-code :global(.tiptap .hljs-tag) {
+    color: #f07178;
+  }
+  .markdown-editor.dark-code :global(.tiptap .hljs-title),
+  .markdown-editor.dark-code :global(.tiptap .hljs-attr),
+  .markdown-editor.dark-code :global(.tiptap .hljs-attribute),
+  .markdown-editor.dark-code :global(.tiptap .hljs-property),
+  .markdown-editor.dark-code :global(.tiptap .hljs-variable),
+  .markdown-editor.dark-code :global(.tiptap .hljs-params) {
+    color: #82aaff;
+  }
+  .markdown-editor.dark-code :global(.tiptap .hljs-built_in),
+  .markdown-editor.dark-code :global(.tiptap .hljs-type),
+  .markdown-editor.dark-code :global(.tiptap .hljs-number),
+  .markdown-editor.dark-code :global(.tiptap .hljs-literal) {
+    color: #f78c6c;
+  }
+  .markdown-editor.dark-code :global(.tiptap .hljs-symbol),
+  .markdown-editor.dark-code :global(.tiptap .hljs-bullet),
+  .markdown-editor.dark-code :global(.tiptap .hljs-link),
+  .markdown-editor.dark-code :global(.tiptap .hljs-operator),
+  .markdown-editor.dark-code :global(.tiptap .hljs-meta) {
+    color: #89ddff;
+  }
+  .markdown-editor.dark-code :global(.tiptap .hljs-comment),
+  .markdown-editor.dark-code :global(.tiptap .hljs-quote) {
+    color: #7d84a8;
+    font-style: italic;
+  }
+  .markdown-editor.dark-code :global(.tiptap .hljs-string),
+  .markdown-editor.dark-code :global(.tiptap .hljs-doctag),
+  .markdown-editor.dark-code :global(.tiptap .hljs-addition) {
+    color: #c3e88d;
+  }
+  .markdown-editor.dark-code :global(.tiptap .hljs-deletion) {
+    color: #ff5370;
   }
 
   .markdown-editor :global(.tiptap blockquote) {

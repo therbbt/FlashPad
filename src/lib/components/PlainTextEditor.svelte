@@ -138,7 +138,14 @@
           // vim must come before other keymaps so it gets first crack at keys.
           vimCompartment.of(vimMode ? [vim()] : []),
           history(),
-          keymap.of([...defaultKeymap, ...historyKeymap]),
+          // Alt-c bound here (rather than left to bubble up to App.svelte's
+          // window keydown handler, like most other Alt+ shortcuts) for the
+          // same reason Ctrl+F is handled entirely inside CodeMirror's own
+          // keymap - Alt-key combos aren't reliably delivered to a window-
+          // level listener from inside this editable surface in the actual
+          // Tauri/WebKitGTK build, only to a keymap registered on the
+          // editor itself.
+          keymap.of([{ key: 'Alt-c', run: () => { insertInlineCode(); return true; }, preventDefault: true }, ...defaultKeymap, ...historyKeymap]),
           drawSelection(),
           lineDisplayCompartment.of(lineDisplayExtensions(showLineNumbers)),
           editableCompartment.of(editableExtensions(editable)),
@@ -244,6 +251,29 @@
       selection: { anchor: from + text.length },
       scrollIntoView: true,
     });
+    view.focus();
+  }
+
+  // Alt+C - wraps the current selection in backticks (inline code), or
+  // inserts an empty pair with the cursor placed between them if nothing
+  // is selected, so typing can continue immediately.
+  export function insertInlineCode() {
+    if (!view || !editable) return;
+    const { from, to } = view.state.selection.main;
+    if (from === to) {
+      view.dispatch({
+        changes: { from, insert: '``' },
+        selection: { anchor: from + 1 },
+        scrollIntoView: true,
+      });
+    } else {
+      const text = view.state.sliceDoc(from, to);
+      view.dispatch({
+        changes: { from, to, insert: `\`${text}\`` },
+        selection: { anchor: from + 1, head: from + 1 + text.length },
+        scrollIntoView: true,
+      });
+    }
     view.focus();
   }
 
