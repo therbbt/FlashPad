@@ -256,6 +256,7 @@ fn main() {
             backup::create_backup_now,
             backup::list_backups,
             backup::export_database,
+            backup::export_note_text,
             backup::import_database,
         ])
         .setup(|app| {

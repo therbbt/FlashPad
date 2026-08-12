@@ -14,7 +14,14 @@ jot something down in a tree of notes, and hide it again.
   shortcuts for headings and formatting. Links open in your default browser
   (Ctrl+Click, a plain click on a locked note, right-click, or Alt+O). Paste
   or drag-and-drop an image (PNG/JPEG/GIF/WebP) to embed it in the note;
-  large images are downscaled automatically.
+  large images are downscaled automatically. Fenced code blocks get real
+  per-language syntax highlighting (via `highlight.js`/`lowlight`, the same
+  color scheme as Editor mode's CodeMirror view — a note looks the same
+  whether or not Editor mode is on), and inline `code` spans are colored as
+  a generic command line (there's no way to tell a command apart from any
+  other inline code, since markdown gives inline spans no language tag).
+  `Alt+C` wraps the current selection in inline code, or starts a fresh
+  span with nothing selected.
 - **Quick inserts** — dividers, timestamps, and datelines via keyboard
   shortcuts.
 - **Note locking** — protect a note from accidental edits.
@@ -24,16 +31,32 @@ jot something down in a tree of notes, and hide it again.
   a syntax-highlighted CodeMirror 6 code editor, with its own color scheme,
   search/replace (`Ctrl`/`Cmd+F`), and Tab-to-indent. Language is
   auto-detected from content (JSON, JS/TS, CSS, HTML, XML, YAML, Markdown,
-  Python, SQL, shell) or pinned manually from the note-info popover — a
+  Python, SQL, shell, and Cisco IOS/Huawei VRP/Nokia SR OS/ADVA network
+  device configs) or pinned manually from the note-info popover — a
   markdown note in editor mode is shown as highlighted markdown source
   rather than the rich view. Independent of the Markdown toggle, so any
-  note can be prose, code, or both.
+  note can be prose, code, or both. Network configs get their own
+  highlighting too (command keywords, interface/port names, state words
+  like `enable`/`in-service`) via a lightweight per-vendor tokenizer, not a
+  full grammar. A markdown note's Editor-mode source view also highlights
+  fenced code blocks (` ```js `, ` ```bash `, …) using each language's own
+  grammar, and colors every inline `` `code` `` span as a generic command
+  line (first word as the command, `-x`/`--flag` words, quoted strings,
+  and version-like numbers each get their own color) — the same treatment
+  the rich Markdown view's inline code gets, for the same reason: there's
+  no way to tell a command apart from any other inline code, since markdown
+  gives inline spans no language tag.
 - **Format** (`Alt+F`, Editor mode only) — real language-aware formatting
   (Prettier, loaded on demand) for JSON, JS/TS, CSS, HTML, YAML, and
-  Markdown; a safe whitespace/indentation tidy-up for everything else,
-  including arbitrary text with no formatter (e.g. a config snippet) —
-  never reflows or reindents content it doesn't recognize. Formats just the
-  current selection if there is one, otherwise the whole note.
+  Markdown, including fenced code blocks embedded inside a markdown note;
+  structural re-indentation (to each vendor's real convention - 1
+  space/level for Cisco IOS and Huawei VRP, 2 for ADVA, 4 for Nokia SR OS)
+  for network configs, preserving whatever nesting the source already
+  encodes rather than trying to parse command syntax; a safe
+  whitespace/indentation tidy-up for everything else, including arbitrary
+  text with no formatter — never reflows or reindents content it doesn't
+  recognize. Formats just the current selection if there is one, otherwise
+  the whole note.
 - **Vim mode** — optional modal editing, toggled in Settings → Editor. Off by
   default. Plain text notes get full vim emulation (motions, operators, text
   objects, registers, counts, dot-repeat, `/` search) via CodeMirror 6 and
@@ -49,7 +72,10 @@ jot something down in a tree of notes, and hide it again.
 - **Local storage** — notes are persisted locally via a SQLite-backed store;
   manage multiple databases, switch between them, and rely on automatic
   local backups with import/export. Optionally search across every
-  registered database at once, not just the active one.
+  registered database at once, not just the active one. Any individual
+  note can also be exported to a plain `.txt` file (its raw content -
+  markdown source, plain text, or code, unrendered) via the sidebar's
+  right-click menu or the Notes menu.
 - **Cloud notebooks** (optional) — sign in and sync notes across devices via
   a Supabase-backed notebook, or share one with a friend using a generated
   invite code (owner/collaborator roles, revocable invites). Fully
@@ -83,11 +109,12 @@ jot something down in a tree of notes, and hide it again.
 | `Alt+1` | Insert a divider line |
 | `Alt+2` | Insert a timestamp |
 | `Alt+3` | Insert a dateline |
+| `Alt+C` | Wrap the selection in inline code (or start typing code with nothing selected) |
 | `Alt+T` | Toggle focus between the editor and the notes menu |
 | `Enter` | Open the focused note, toggling its subnotes if it has any |
 | `↑` / `↓` (or `j` / `k` with vim mode on) | Move through the tree or search results |
 | `←` / `→` | Collapse / expand the focused note's subnotes |
-| Right-click a note | New subnote, rename, duplicate, move, copy/cut/paste, lock, delete |
+| Right-click a note | New subnote, rename, duplicate, move, copy/cut/paste, export to .txt, lock, delete |
 | Right-click the text | Copy/cut the selection, paste, lock / unlock |
 | `Enter` / `Esc` (while renaming) | Confirm / cancel |
 
@@ -95,8 +122,8 @@ jot something down in a tree of notes, and hide it again.
 
 - [Tauri 2](https://tauri.app/) (Rust) for the desktop shell
 - [Svelte 5](https://svelte.dev/) + [Vite](https://vitejs.dev/) + TypeScript for the frontend
-- [Tiptap](https://tiptap.dev/) for markdown editing
-- [CodeMirror 6](https://codemirror.net/) + [`@replit/codemirror-vim`](https://github.com/replit/codemirror-vim) for the plain text editor and its vim mode; also powers Editor mode's syntax highlighting, search/replace, and per-language grammars
+- [Tiptap](https://tiptap.dev/) for markdown editing, with [`highlight.js`](https://highlightjs.org/)/[`lowlight`](https://github.com/wooorm/lowlight) for its fenced-code-block syntax highlighting
+- [CodeMirror 6](https://codemirror.net/) + [`@replit/codemirror-vim`](https://github.com/replit/codemirror-vim) for the plain text editor and its vim mode; also powers Editor mode's syntax highlighting, search/replace, and per-language grammars (including [`@codemirror/legacy-modes`](https://github.com/codemirror/legacy-modes) for shell, and hand-rolled tokenizers for network device configs and command-line inline code — see `src/lib/theme/`)
 - [Prettier](https://prettier.io/) (loaded on demand) for Format's language-aware formatting
 - [Supabase](https://supabase.com/) (optional) for cloud notebooks — auth, Postgres, and row-level security; see [`supabase/README.md`](supabase/README.md)
 - Tauri plugins: `autostart`, `global-shortcut`, `window-state`, `dialog`, `updater`, `process`, `clipboard-manager`, `opener`
@@ -136,6 +163,6 @@ npm run tauri build
   - `src/lib/services/` — app services (notes, settings, hotkeys, database, cloud/Supabase, autostart)
   - `src/lib/stores/` — shared Svelte stores (notes/tree state, database/search state, cloud/auth state, status bar, vim mode indicator)
   - `src/lib/utils/` — language auto-detection and Format's formatting logic, among others
-  - `src/lib/theme/` — palettes and Editor mode's code-editor color scheme
+  - `src/lib/theme/` — palettes, Editor mode's code-editor color scheme, the network-config/command-line tokenizers, and the Markdown view's code-block/inline-code highlighting
 - `src-tauri/` — Rust/Tauri backend and app configuration (local SQLite databases)
 - `supabase/` — SQL schema, RLS policies, and setup docs for optional cloud notebooks

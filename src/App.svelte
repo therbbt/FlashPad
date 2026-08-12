@@ -6,6 +6,7 @@
   import { DEFAULT_DARK_PALETTE_ID, DEFAULT_LIGHT_PALETTE_ID, applyPalette, getPalette } from './lib/theme/palettes';
   import { HotkeyService } from './lib/services/hotkeyService';
   import { DatabaseService, type AppState } from './lib/services/databaseService';
+  import { BackupService } from './lib/services/backupService';
   import TreeNode, { type TreeItem } from './lib/components/TreeNode.svelte';
   import SidebarResizer from './lib/components/SidebarResizer.svelte';
   import NoteInfoPopover from './lib/components/NoteInfoPopover.svelte';
@@ -29,6 +30,7 @@
   import { ensurePluginsDirExists, loadEnabledPlugins } from './lib/plugins/pluginLoader';
   import { check as checkForUpdate, type Update } from '@tauri-apps/plugin-updater';
   import { writeText as writeClipboardText, readText } from '@tauri-apps/plugin-clipboard-manager';
+  import { save as saveFileDialog } from '@tauri-apps/plugin-dialog';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { isAllowedLinkUrl } from './lib/utils/links';
   import { resolveEffectiveLanguage } from './lib/utils/languageDetect';
@@ -68,6 +70,7 @@
   const settingsService = new SettingsService();
   const hotkeyService = new HotkeyService();
   const databaseService = new DatabaseService();
+  const backupService = new BackupService();
 
   // A note from the active database (no databaseId) or from another one via
   // the "search all databases" toggle (see searchableNotes below). number
@@ -539,6 +542,30 @@
     selectNote(await notesStore.duplicateNote(id));
   };
 
+  // Exports a note's raw text content (markdown source, plain text, or
+  // code - whatever's actually stored, no rendering/conversion) to a
+  // user-chosen .txt file. Reads straight from the note record rather than
+  // the currently-open noteText/title locals, since the right-clicked note
+  // (sidebar) isn't necessarily the one currently open in the editor pane.
+  const exportNoteToTxt = async (id: number) => {
+    const note = $notes.find((n) => n.id === id);
+    if (!note) return;
+    // Filesystem-illegal characters on Windows (and awkward on macOS/Linux
+    // too) - note titles are free-form text with no such restriction.
+    const safeTitle = (note.title.trim() || 'Untitled').replace(/[\\/:*?"<>|]/g, '_');
+    const picked = await saveFileDialog({
+      defaultPath: `${safeTitle}.txt`,
+      filters: [{ name: 'Text file', extensions: ['txt'] }],
+    });
+    if (!picked) return;
+    try {
+      await backupService.exportNoteText(picked, note.content);
+      status.set('Exported');
+    } catch (err) {
+      status.set(err instanceof Error ? err.message : 'Export failed');
+    }
+  };
+
   const toggleLock = async (id: number) => {
     const saved = await notesStore.toggleLock(id);
     if (saved && $selectedId === id) isLockedActive = saved.isLocked;
@@ -546,7 +573,14 @@
 
   const toggleEditorMode = async (id: number) => {
     const saved = await notesStore.toggleEditorMode(id);
-    if (saved && $selectedId === id) isEditorModeActive = saved.isEditorMode;
+    if (!saved || $selectedId !== id) return;
+    isEditorModeActive = saved.isEditorMode;
+    // Same DOM-swap-loses-focus issue as toggleMarkdown - flipping this
+    // flag mounts a different editor component entirely (EditorModeEditor
+    // vs. Markdown/PlainTextEditor), so whatever was focused is gone; wait
+    // for the swap to render, then focus whichever editor is now showing.
+    await tick();
+    activeTextEditorRef()?.focus();
   };
 
   const showToast = (message: string) => {
@@ -632,6 +666,7 @@
         { label: '', separator: true },
         { label: 'Copy', action: () => notesStore.copyNote(noteId) },
         { label: 'Cut', action: () => notesStore.cutNote(noteId) },
+        { label: 'Export to .txt…', action: () => void exportNoteToTxt(noteId) },
         { label: '', separator: true },
         { label: locked ? 'Unlock' : 'Lock', action: () => void toggleLock(noteId) },
         { label: '', separator: true },
@@ -905,6 +940,9 @@
         { label: '', separator: true },
         { label: isLockedActive ? 'Unlock' : 'Lock', disabled: $selectedId == null, action: () => {
             if ($selectedId != null) void toggleLock($selectedId);
+          } },
+        { label: 'Export to .txt…', disabled: $selectedId == null, action: () => {
+            if ($selectedId != null) void exportNoteToTxt($selectedId);
           } },
         { label: '', separator: true },
         { label: 'Delete', danger: true, action: () => {
@@ -1330,6 +1368,7 @@
           placeholder="Start typing instantly..."
           editable={!isLockedActive}
           vimMode={vimModeEnabled}
+          themeMode={theme}
         />
       {:else}
         <PlainTextEditor

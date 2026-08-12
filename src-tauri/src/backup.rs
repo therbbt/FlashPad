@@ -194,6 +194,19 @@ pub fn export_database(db: State<DbState>, dest_path: String) -> Result<(), Stri
     })
 }
 
+/// Exports a single note's text content to an arbitrary user-chosen path
+/// (picked via the native save dialog on the frontend, same as
+/// `export_database` above) - a plain file write, done here in Rust rather
+/// than via the frontend's `@tauri-apps/plugin-fs` so it isn't subject to
+/// that plugin's filesystem scope (which doesn't cover arbitrary
+/// dialog-picked paths without extra capability config); the note content
+/// itself already lives in the frontend, so this takes it directly rather
+/// than re-reading it from the database.
+#[tauri::command]
+pub fn export_note_text(dest_path: String, content: String) -> Result<(), String> {
+    std::fs::write(&dest_path, content).map_err(|e| e.to_string())
+}
+
 /// Replaces the active database's contents with `source_path`'s, after
 /// validating it's a real FlashPad file and taking a safety backup of the
 /// current data first. The safety backup happens strictly before the
