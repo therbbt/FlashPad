@@ -41,3 +41,22 @@ VITE_SUPABASE_ANON_KEY=your-anon-key
 `npm run tauri dev` after creating or changing it. Without a `.env`, FlashPad
 runs exactly as before with only local databases; the Cloud tab in Settings
 will say cloud notebooks aren't configured.
+
+## 5. Building/releasing with cloud notebooks enabled
+
+`VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` are Vite **build-time** env
+vars - they get baked into the bundle wherever `npm run tauri build` (or
+`npm run build`) actually runs, not read at runtime from a file that ships
+with the installer. A `.env` on your own machine only affects builds you run
+locally.
+
+The CI workflows (`.github/workflows/build-windows.yml`,
+`build-linux.yml`, `release.yml`) build on GitHub's runners, which never see
+your local `.env` (it's gitignored, not checked out). For those builds to
+have cloud notebooks enabled too, add `VITE_SUPABASE_URL` and
+`VITE_SUPABASE_ANON_KEY` as **repository secrets**
+(Settings → Secrets and variables → Actions) with the same values as your
+`.env` - the workflows already forward them if the secrets exist. Skipping
+this is fine: cloud notebooks are fully optional, so a build without these
+secrets just has the sign-in UI hidden, same as running locally with no
+`.env`.

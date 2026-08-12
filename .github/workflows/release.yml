@@ -17,6 +17,13 @@ name: Release
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD - the password used when generating it
 # Without these set, tauri-action still builds but the artifacts won't be
 # signed, and the in-app updater will refuse them.
+#
+# Two more repository secrets are optional, for cloud notebooks:
+#   VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY - same values as your local
+#   .env (see supabase/README.md). These are Vite build-time env vars baked
+#   into the bundle at build time, not read at runtime - without them, the
+#   released app just has cloud notebooks' sign-in UI hidden (fully optional,
+#   local-only mode still works fine), not broken/erroring.
 
 on:
   push:
@@ -73,6 +80,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'FlashPad ${{ github.ref_name }}'
@@ -142,6 +151,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'FlashPad ${{ github.ref_name }}'
