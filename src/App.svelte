@@ -33,6 +33,7 @@
   import { save as saveFileDialog } from '@tauri-apps/plugin-dialog';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { isAllowedLinkUrl } from './lib/utils/links';
+  import { computeBacklinks } from './lib/utils/wikiLinks';
   import { resolveEffectiveLanguage } from './lib/utils/languageDetect';
   import { toCrlfNewlines, prefersCrlfClipboard } from './lib/utils/clipboard';
   import {
@@ -159,6 +160,8 @@
   $: selectedNoteUpdatedAt = $notes.find((n) => n.id === $selectedId)?.updatedAt ?? null;
   $: selectedNoteLanguage = $notes.find((n) => n.id === $selectedId)?.language ?? null;
   $: selectedNoteEffectiveLanguage = $selectedId == null ? null : resolveEffectiveLanguage(noteText, isMarkdownActive, selectedNoteLanguage);
+  $: selectedNoteRecord = $notes.find((n) => n.id === $selectedId) ?? null;
+  $: selectedNoteBacklinks = selectedNoteRecord ? computeBacklinks(selectedNoteRecord, $notes) : [];
 
   // ---------- data loading ----------
 
@@ -604,6 +607,24 @@
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Failed to open link');
     }
+  };
+
+  // Navigates to the note matching `rawTitle` (case-insensitive, trimmed -
+  // same rule wikiLinks.ts's resolveWikiLinkTitle uses), or creates one
+  // with that exact title at the root level if none exists yet - the
+  // "click a red link to create the page" wiki convention. Root level
+  // (not $activeParentId) is a predictable landing spot regardless of
+  // whatever the sidebar happens to be scrolled/expanded to.
+  const openWikiLink = async (rawTitle: string) => {
+    const needle = rawTitle.trim().toLowerCase();
+    const existing = needle ? $notes.find((n) => n.title.trim().toLowerCase() === needle) : undefined;
+    if (existing) {
+      selectNote(existing, true);
+      return;
+    }
+    const created = await notesStore.createNoteIn(null, rawTitle.trim() || 'Untitled');
+    selectNote(created, true);
+    status.set(`Created note "${created.title}"`);
   };
 
   const deleteNoteById = async (id: number) => {
@@ -1331,6 +1352,8 @@
             effectiveLanguage={selectedNoteEffectiveLanguage}
             onLanguageChange={handleLanguageChange}
             onError={(msg) => status.set(msg)}
+            backlinks={selectedNoteBacklinks}
+            onOpenBacklink={(id) => void openNote(id, true)}
           />
         {/if}
         {#if isLockedActive}
@@ -1365,6 +1388,8 @@
           noteId={$selectedId ?? -1}
           onUpdate={handleMarkdownEditorUpdate}
           onOpenLink={openLink}
+          onOpenWikiLink={openWikiLink}
+          noteTitles={$notes.map((n) => ({ id: n.id, title: n.title }))}
           placeholder="Start typing instantly..."
           editable={!isLockedActive}
           vimMode={vimModeEnabled}

@@ -1,8 +1,10 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { Editor, Extension } from '@tiptap/core';
-  import { Plugin, TextSelection } from '@tiptap/pm/state';
+  import { Editor, Extension, Node } from '@tiptap/core';
+  import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
+  import { Decoration, DecorationSet } from '@tiptap/pm/view';
   import type { EditorView } from '@tiptap/pm/view';
+  import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
   import StarterKit from '@tiptap/starter-kit';
   import TiptapLink from '@tiptap/extension-link';
   import TiptapImage from '@tiptap/extension-image';
@@ -18,6 +20,7 @@
   import { vimModeIndicator } from '../stores/vimModeIndicator';
   import { markdownCodeBlockLowlight } from '../theme/markdownCodeBlockLanguages';
   import { InlineCodeHighlight } from '../theme/inlineCodeHighlight';
+  import { WIKI_LINK_RE, normalizeWikiTitle } from '../utils/wikiLinks';
   import type { EditorContext } from '../plugins/pluginApi';
 
   const isTauriRuntime = () => typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
@@ -31,6 +34,16 @@
   // toast, since it's the one place that needs to do that consistently for
   // both the click handler here and the right-click "Open link" menu item.
   export let onOpenLink: (url: string) => void;
+  // Called with a [[wiki-link]]'s title on click (same locked/unlocked
+  // click-vs-Ctrl+click convention as onOpenLink above, see
+  // handleWikiLinkClick) - App.svelte resolves it to an existing note or
+  // offers to create one.
+  export let onOpenWikiLink: (title: string) => void;
+  // Every note's id/title, used only to decide whether a wiki-link's title
+  // currently resolves to a real note (drives the .unresolved styling -
+  // see the wikiLinkDecorations plugin). Not used for autocomplete - there
+  // isn't any, by design; see wikiLinks.ts.
+  export let noteTitles: { id: number; title: string }[] = [];
   export let placeholder = '';
   export let editable = true;
   export let vimMode = false;
@@ -106,6 +119,125 @@
       };
     },
   });
+
+  // [[Note Title]] references, resolved by title (see wikiLinks.ts) - an
+  // atom Node (not a Mark) so it's one opaque, click-target-sized,
+  // Backspace-deletable unit, same mental model as ResizableImage above.
+  // Deliberately not a Mark-over-plain-bracket-text: tiptap-markdown's
+  // Text node serializer backslash-escapes literal "[" and "]" via
+  // prosemirror-markdown's esc() (see node_modules/prosemirror-markdown),
+  // so plain typed "[[Title]]" text would silently corrupt into
+  // "\[\[Title\]\]" the moment the note saves - exactly the same reason
+  // ResizableImage needs its own markdown.serialize override instead of
+  // relying on generic text/attribute serialization.
+  //
+  // Whether a title currently resolves to a real note is intentionally
+  // NOT baked into renderHTML (which only runs once per node
+  // materialization) - it's driven by the separate wikiLinkDecorations
+  // plugin below instead, so existing nodes' styling updates live as
+  // notes are created/renamed, without needing to force a re-render.
+  let resolvedWikiTitles = new Set<string>();
+  const getResolvedWikiTitles = () => resolvedWikiTitles;
+
+  const WikiLink = Node.create({
+    name: 'wikiLink',
+    group: 'inline',
+    inline: true,
+    atom: true,
+    selectable: true,
+    addAttributes() {
+      return { title: { default: '' } };
+    },
+    parseHTML() {
+      return [{ tag: 'span[data-wiki-link]', getAttrs: (el) => ({ title: (el as HTMLElement).getAttribute('data-title') ?? '' }) }];
+    },
+    renderHTML({ node }) {
+      const title = (node.attrs.title as string) ?? '';
+      return ['span', { 'data-wiki-link': '', 'data-title': title, class: 'wiki-link' }, title];
+    },
+    addStorage() {
+      return {
+        markdown: {
+          serialize(state: { write: (t: string) => void }, node: { attrs: Record<string, unknown> }) {
+            state.write(`[[${(node.attrs.title as string) ?? ''}]]`);
+          },
+          parse: {},
+        },
+      };
+    },
+    addProseMirrorPlugins() {
+      return [wikiLinkTextToNodePlugin, wikiLinkDecorationsPlugin];
+    },
+  });
+
+  // Converts literal "[[Title]]" text into real wikiLink nodes - covers
+  // both a note loading from saved markdown (setContent dispatches a
+  // docChanged transaction, same as any other edit) and live typing (the
+  // transaction right after the closing "]]" is typed), in one mechanism.
+  // Self-terminating: a converted node's rendered content is just the
+  // title with no bracket characters in the document itself, so there's
+  // nothing left for a later pass to match - safe against infinite loops.
+  //
+  // Matches are collected first, then applied in REVERSE (highest position
+  // first): replacing a later match doesn't shift the positions of earlier
+  // ones, so this avoids the classic "stale position after mutating the
+  // same transaction" ProseMirror pitfall without needing tr.mapping.map().
+  const wikiLinkTextToNodePlugin = new Plugin({
+    key: new PluginKey('wikiLinkTextToNode'),
+    appendTransaction(transactions, _oldState, newState) {
+      if (!transactions.some((t) => t.docChanged)) return null;
+      const matches: { from: number; to: number; title: string }[] = [];
+      newState.doc.descendants((node, pos) => {
+        if (!node.isText || !node.text) return;
+        for (const match of node.text.matchAll(WIKI_LINK_RE)) {
+          const title = match[1].trim();
+          if (!title) continue;
+          const from = pos + (match.index ?? 0);
+          matches.push({ from, to: from + match[0].length, title });
+        }
+      });
+      if (!matches.length) return null;
+      const tr = newState.tr;
+      for (const { from, to, title } of matches.reverse()) {
+        tr.replaceWith(from, to, newState.schema.nodes.wikiLink.create({ title }));
+      }
+      return tr;
+    },
+  });
+
+  // Adds/removes the .unresolved class (see the CSS below) on wikiLink
+  // nodes whose title doesn't currently match any note - recomputed on
+  // every doc change, and also on an explicit "wikiLinkTitlesChanged" meta
+  // transaction dispatched whenever the noteTitles prop changes (a note
+  // got created/renamed/deleted) without the document itself changing.
+  const wikiLinkDecorationsKey = new PluginKey('wikiLinkDecorations');
+  const wikiLinkDecorationsPlugin = new Plugin({
+    key: wikiLinkDecorationsKey,
+    state: {
+      init: (_config, state) => buildWikiLinkDecorations(state.doc),
+      apply(tr, old, _oldState, newState) {
+        if (tr.docChanged || tr.getMeta('wikiLinkTitlesChanged')) return buildWikiLinkDecorations(newState.doc);
+        return old.map(tr.mapping, tr.doc);
+      },
+    },
+    props: {
+      decorations(state) {
+        return wikiLinkDecorationsKey.getState(state);
+      },
+    },
+  });
+
+  function buildWikiLinkDecorations(doc: ProseMirrorNode): DecorationSet {
+    const decorations: Decoration[] = [];
+    doc.descendants((node, pos) => {
+      if (node.type.name !== 'wikiLink') return;
+      const title = (node.attrs.title as string) ?? '';
+      if (!getResolvedWikiTitles().has(normalizeWikiTitle(title))) {
+        decorations.push(Decoration.node(pos, pos + node.nodeSize, { class: 'unresolved' }));
+      }
+    });
+    return DecorationSet.create(doc, decorations);
+  }
 
   // Minimal vim-lite modal editing for Markdown notes - deliberately NOT
   // the full vim feature set (no word motions, text objects, registers,
@@ -454,6 +586,20 @@
     onOpenLink(href);
   };
 
+  // Same locked/unlocked click-vs-Ctrl+click convention as handleLinkClick
+  // above. wikiLink renders as a plain <span data-wiki-link>, never an
+  // <a href> (see WikiLink.renderHTML), so this and handleLinkClick key off
+  // disjoint selectors and can't double-fire on the same click.
+  const handleWikiLinkClick = (event: MouseEvent) => {
+    const el = (event.target as HTMLElement | null)?.closest?.('[data-wiki-link]') as HTMLElement | null;
+    const title = el?.getAttribute('data-title');
+    if (title == null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (editable && !(event.ctrlKey || event.metaKey)) return;
+    onOpenWikiLink(title);
+  };
+
   // Applies a task item checkbox's new checked state to the document when
   // the note is locked (read-only). Unlocked notes don't need this - Tiptap
   // already updates the document correctly there via its own getPos()-based
@@ -617,6 +763,7 @@
 
   onMount(() => {
     element.addEventListener('click', handleLinkClick, true);
+    element.addEventListener('click', handleWikiLinkClick, true);
     element.addEventListener('change', handleTaskCheckboxChange);
     element.addEventListener('paste', handleImagePaste, true);
     element.addEventListener('drop', handleImageDrop, true);
@@ -683,6 +830,7 @@
           // which renderMarkdown above then serializes.
           resize: { enabled: true, minWidth: 40, minHeight: 40 },
         }),
+        WikiLink,
         Placeholder.configure({ placeholder }),
         TaskList,
         TaskItem.configure({
@@ -728,6 +876,16 @@
 
   $: editor?.setEditable(editable);
 
+  // Keeps wikiLink nodes' resolved/unresolved styling current as notes get
+  // created/renamed/deleted, without needing the document itself to
+  // change - see wikiLinkDecorationsPlugin above, which reads
+  // resolvedWikiTitles (via getResolvedWikiTitles) whenever this dispatch
+  // triggers it to recompute.
+  $: if (editor && noteTitles) {
+    resolvedWikiTitles = new Set(noteTitles.map((n) => normalizeWikiTitle(n.title)));
+    editor.view.dispatch(editor.state.tr.setMeta('wikiLinkTitlesChanged', true));
+  }
+
   // Single source of truth for the footer badge - reacts to the mode
   // switching (vimNormalMode), the setting toggling, and the note's
   // editable/locked state, so none of those call sites need to touch the
@@ -737,6 +895,7 @@
 
   onDestroy(() => {
     element.removeEventListener('click', handleLinkClick, true);
+    element.removeEventListener('click', handleWikiLinkClick, true);
     element.removeEventListener('change', handleTaskCheckboxChange);
     element.removeEventListener('paste', handleImagePaste, true);
     element.removeEventListener('drop', handleImageDrop, true);
@@ -957,6 +1116,23 @@
 
   .markdown-editor :global(.tiptap a:hover) {
     text-decoration: underline;
+  }
+
+  .markdown-editor :global(.tiptap .wiki-link) {
+    color: var(--accent);
+    background: var(--panel-2);
+    border-radius: 0.25rem;
+    padding: 0 0.25em;
+    cursor: pointer;
+  }
+
+  /* Dashed/muted rather than the normal wiki-link look - the title doesn't
+     currently match any note's title (see wikiLinkDecorationsPlugin).
+     Clicking it still works: it creates a note with that exact title. */
+  .markdown-editor :global(.tiptap .wiki-link.unresolved) {
+    color: var(--muted);
+    background: transparent;
+    border: 1px dashed var(--border);
   }
 
   .markdown-editor :global(.tiptap ul[data-type='taskList']) {
