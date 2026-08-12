@@ -22,6 +22,17 @@ jot something down in a tree of notes, and hide it again.
   other inline code, since markdown gives inline spans no language tag).
   `Alt+C` wraps the current selection in inline code, or starts a fresh
   span with nothing selected.
+- **Note linking** — type `[[Note Title]]` in a markdown note to reference
+  another note by title; it converts into a clickable link as soon as you
+  type the closing `]]`. Click (locked note) or Ctrl/Cmd+click (unlocked
+  note) to jump straight to it. A title that doesn't match any note yet
+  renders with a dashed, muted style — click it to create that note on the
+  spot. The note-info popover (the ⓘ next to the title) gets a **Backlinks**
+  section listing every note that links to the one you're viewing.
+  Lightweight by design: links resolve by title (not a stable id), so
+  renaming a note doesn't rewrite other notes' references to it — they just
+  go from resolved to unresolved. No autocomplete; type the title as you
+  remember it.
 - **Quick inserts** — dividers, timestamps, and datelines via keyboard
   shortcuts.
 - **Note locking** — protect a note from accidental edits.

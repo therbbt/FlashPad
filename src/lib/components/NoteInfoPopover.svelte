@@ -12,6 +12,10 @@
   export let effectiveLanguage: LanguageId | null = null;
   export let onLanguageChange: ((language: string) => void) | null = null;
   export let onError: (message: string) => void;
+  // Notes that reference this one via [[Title]] - see wikiLinks.ts's
+  // computeBacklinks, computed by App.svelte.
+  export let backlinks: { noteId: number; title: string }[] = [];
+  export let onOpenBacklink: ((noteId: number) => void) | null = null;
 
   let open = false;
   let copiedField: 'created' | 'updated' | null = null;
@@ -142,6 +146,24 @@
           </div>
         </div>
       {/if}
+      {#if backlinks.length}
+        <div class="note-info-divider"></div>
+        <div class="note-info-section-label">Backlinks</div>
+        {#each backlinks as link (link.noteId)}
+          <button
+            type="button"
+            class="note-info-row note-info-backlink"
+            on:click={() => {
+              onOpenBacklink?.(link.noteId);
+              open = false;
+            }}
+          >
+            <div class="note-info-text">
+              <span class="note-info-value">{link.title}</span>
+            </div>
+          </button>
+        {/each}
+      {/if}
     </div>
   {/if}
 </div>
@@ -268,5 +290,28 @@
     right: 0.45rem;
     color: var(--muted);
     pointer-events: none;
+  }
+
+  .note-info-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 0.2rem 0;
+  }
+
+  .note-info-section-label {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--muted);
+    padding: 0.2rem 0.4rem 0;
+  }
+
+  .note-info-backlink {
+    width: 100%;
+    border: none;
+    background: transparent;
+    font: inherit;
+    cursor: pointer;
+    text-align: left;
   }
 </style>
