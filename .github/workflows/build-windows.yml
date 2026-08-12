@@ -25,9 +25,16 @@ jobs:
         # every `tauri build` tries to sign - these secrets have to be set
         # here too, not just in release.yml, or this smoke-test build fails
         # after bundling with "public key found, but no private key".
+        # VITE_SUPABASE_URL/VITE_SUPABASE_ANON_KEY are Vite build-time env
+        # vars baked into the bundle here - without them, cloud notebooks'
+        # sign-in UI is silently hidden in the built app (isCloudConfigured()
+        # in src/lib/supabaseClient.ts returns false), not broken/erroring.
+        # Cloud notebooks stay fully optional if these secrets aren't set.
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: npm run tauri build
 
       - name: Upload installers
