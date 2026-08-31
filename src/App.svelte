@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import type { NoteRecord } from './lib/services/notesService';
   import { SettingsService, type FlashPadSettings } from './lib/services/settingsService';
@@ -9,15 +9,13 @@
   import { BackupService } from './lib/services/backupService';
   import TreeNode, { type TreeItem } from './lib/components/TreeNode.svelte';
   import SidebarResizer from './lib/components/SidebarResizer.svelte';
-  import NoteInfoPopover from './lib/components/NoteInfoPopover.svelte';
+  import PaneResizer from './lib/components/PaneResizer.svelte';
+  import NotePane from './lib/components/NotePane.svelte';
   import ContextMenu, { type ContextMenuItem } from './lib/components/ContextMenu.svelte';
   import ShortcutsPanel from './lib/components/ShortcutsPanel.svelte';
   import SettingsPanel from './lib/components/SettingsPanel.svelte';
   import ActionToolbar from './lib/components/ActionToolbar.svelte';
   import Footer from './lib/components/Footer.svelte';
-  import MarkdownEditor from './lib/components/MarkdownEditor.svelte';
-  import PlainTextEditor from './lib/components/PlainTextEditor.svelte';
-  import EditorModeEditor from './lib/components/EditorModeEditor.svelte';
   import MarkdownHelpPanel from './lib/components/MarkdownHelpPanel.svelte';
   import ConfirmDialog from './lib/components/ConfirmDialog.svelte';
   import TitleBar from './lib/components/TitleBar.svelte';
@@ -26,15 +24,12 @@
   import UpdateDialog from './lib/components/UpdateDialog.svelte';
   import PluginFormDialog from './lib/components/PluginFormDialog.svelte';
   import PluginMessageDialog from './lib/components/PluginMessageDialog.svelte';
-  import { getEditorContextMenuItemsFor, activePluginForm, activePluginMessage, type EditorContext } from './lib/plugins/pluginApi';
+  import { activePluginForm, activePluginMessage } from './lib/plugins/pluginApi';
   import { ensurePluginsDirExists, loadEnabledPlugins } from './lib/plugins/pluginLoader';
   import { check as checkForUpdate, type Update } from '@tauri-apps/plugin-updater';
-  import { writeText as writeClipboardText, readText } from '@tauri-apps/plugin-clipboard-manager';
   import { save as saveFileDialog } from '@tauri-apps/plugin-dialog';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { isAllowedLinkUrl } from './lib/utils/links';
-  import { computeBacklinks } from './lib/utils/wikiLinks';
-  import { resolveEffectiveLanguage } from './lib/utils/languageDetect';
   import { toCrlfNewlines, prefersCrlfClipboard } from './lib/utils/clipboard';
   import {
     notes,
@@ -106,31 +101,79 @@
   // onMount overwrites it with the saved width.
   let sidebarWidth = 260;
 
-  let noteText = '';
-  let title = 'Untitled';
-  let titleAutoDerive = true;
   let query = '';
   let theme: FlashPadSettings['theme'] = 'dark';
   let lightPaletteId = DEFAULT_LIGHT_PALETTE_ID;
   let darkPaletteId = DEFAULT_DARK_PALETTE_ID;
-  let isMarkdownActive = false;
-  let isLockedActive = false;
-  let showLineNumbersActive = false;
-  let isEditorModeActive = false;
+  // Owned by NotePane, bound back up here since ActionToolbar/Footer need
+  // to reflect them live (which buttons show) without waiting on a save
+  // round-trip - see NotePane.svelte's own comment on these three props.
+  // Split view means two independent copies (one per pane) - isMarkdownActive
+  // etc. below are then derived from whichever pane is currently focused,
+  // since that's what ActionToolbar/Footer should actually reflect.
+  let primaryIsMarkdownActive = false;
+  let primaryIsLockedActive = false;
+  let primaryIsEditorModeActive = false;
+  let secondaryIsMarkdownActive = false;
+  let secondaryIsLockedActive = false;
+  let secondaryIsEditorModeActive = false;
   let vimModeEnabled = false;
   let dateTimeNoteNamesEnabled = true;
   let enabledPluginIds: string[] = [];
-  let markdownEditorRef: MarkdownEditor | undefined;
-  let plainEditorRef: PlainTextEditor | undefined;
-  let editorModeEditorRef: EditorModeEditor | undefined;
-  // The single dispatch point for the three text-editing methods every
-  // editor implements the same way (focus/insertAtCursor/format) -
-  // isEditorModeActive (a per-note flag, like isMarkdownActive) overrides
-  // isMarkdownActive entirely when on, matching how the render block below
-  // picks which editor is actually mounted.
-  const activeTextEditorRef = () => (isEditorModeActive ? editorModeEditorRef : isMarkdownActive ? markdownEditorRef : plainEditorRef);
+  let primaryPaneRef: NotePane | undefined;
+  let secondaryPaneRef: NotePane | undefined;
+  // Split view state. splitNoteId is the SECONDARY pane's note - the
+  // primary pane always shows $selectedId, exactly as it did before split
+  // view existed, so every pre-existing selectedId-based reference
+  // elsewhere in the app (TreeNode highlighting via focusedNoteId below,
+  // search, etc.) keeps working unchanged when split view is off. Not
+  // persisted across restarts - relaunching returns to single-pane.
+  let splitViewEnabled = false;
+  let splitNoteId: number | null = null;
+  let splitRatio = 0.5;
+  let focusedPane: 'primary' | 'secondary' = 'primary';
+
+  $: isMarkdownActive = focusedPane === 'secondary' ? secondaryIsMarkdownActive : primaryIsMarkdownActive;
+  $: isLockedActive = focusedPane === 'secondary' ? secondaryIsLockedActive : primaryIsLockedActive;
+  $: isEditorModeActive = focusedPane === 'secondary' ? secondaryIsEditorModeActive : primaryIsEditorModeActive;
+  // Whichever note the currently-focused pane is showing - Alt+L/Alt+D/
+  // Alt+R and sidebar highlighting all act on this, not always $selectedId,
+  // once a second pane can be focused instead.
+  $: focusedNoteId = focusedPane === 'secondary' ? splitNoteId : $selectedId;
+
+  // Dispatch point for "whichever pane currently has focus" - every
+  // keyboard shortcut/toolbar action that acts on "the current note" goes
+  // through this rather than hardcoding primaryPaneRef, so split view just
+  // works for all of them once a second pane exists.
+  const activePaneRef = () => (focusedPane === 'secondary' ? secondaryPaneRef : primaryPaneRef);
+
+  // Clicking inside a pane (see NotePane's onFocus prop, fired on
+  // mousedown in the capture phase - before a wiki-link/backlink click
+  // inside it resolves, so those correctly land in whichever pane they
+  // were clicked from) marks it focused. Doesn't touch $selectedId/
+  // splitNoteId themselves - the panes stay showing whatever they're
+  // showing, only which one shortcuts/sidebar-clicks target changes.
+  const focusPane = (pane: 'primary' | 'secondary') => {
+    focusedPane = pane;
+  };
+
+  const toggleSplitView = () => {
+    if (splitViewEnabled) {
+      splitViewEnabled = false;
+      focusedPane = 'primary';
+      return;
+    }
+    splitViewEnabled = true;
+    // Starts empty rather than duplicating the primary's note - the
+    // secondary pane shows its own "pick a note" placeholder (see
+    // NotePane.svelte) until you click one in the sidebar while it has
+    // focus, which is what focusing it here (instead of leaving the
+    // primary focused) is for.
+    splitNoteId = null;
+    focusedPane = 'secondary';
+  };
+
   let treeEl: HTMLDivElement;
-  let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let toastMessage: string | null = null;
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -156,12 +199,6 @@
     focusedKey.set(visibleFlat[0].key);
   }
   $: searchMatchIndex = isSearching ? searchResults.findIndex((n) => n.id === $selectedId) : -1;
-  $: selectedNoteCreatedAt = $notes.find((n) => n.id === $selectedId)?.createdAt ?? null;
-  $: selectedNoteUpdatedAt = $notes.find((n) => n.id === $selectedId)?.updatedAt ?? null;
-  $: selectedNoteLanguage = $notes.find((n) => n.id === $selectedId)?.language ?? null;
-  $: selectedNoteEffectiveLanguage = $selectedId == null ? null : resolveEffectiveLanguage(noteText, isMarkdownActive, selectedNoteLanguage);
-  $: selectedNoteRecord = $notes.find((n) => n.id === $selectedId) ?? null;
-  $: selectedNoteBacklinks = selectedNoteRecord ? computeBacklinks(selectedNoteRecord, $notes) : [];
 
   // ---------- data loading ----------
 
@@ -176,15 +213,20 @@
     } else {
       selectNote(await notesStore.createWelcomeNote(hotkeySetting));
     }
-    requestAnimationFrame(() => activeTextEditorRef()?.focus());
+    requestAnimationFrame(() => activePaneRef()?.focus());
   };
 
   // Resets everything scoped to the previously-active database's notes so
-  // no stale ids from the old vault leak into tree-expansion, clipboard, or
-  // search state after switching to a different database.
+  // no stale ids from the old vault leak into tree-expansion, clipboard,
+  // search, or split-view state after switching to a different database -
+  // splitNoteId in particular would otherwise keep pointing at an id from
+  // a database that's no longer even loaded.
   const resetNoteScopedState = () => {
     notesStore.resetSelection();
     query = '';
+    splitViewEnabled = false;
+    splitNoteId = null;
+    focusedPane = 'primary';
   };
 
   // Shared by every path that can hand back a fresh AppState after
@@ -296,30 +338,36 @@
 
   // ---------- note editor ----------
 
-  const deriveTitleFromContent = (content: string, isMarkdown: boolean): string => {
-    const firstLine = content.split('\n').find((line) => line.trim().length > 0)?.trim() ?? '';
-    const cleaned = isMarkdown ? firstLine.replace(/^#{1,6}\s+/, '') : firstLine;
-    if (!cleaned) return 'Untitled';
-    return cleaned.length > 80 ? cleaned.slice(0, 80) : cleaned;
+  // Sets which note the currently-focused pane shows - the actual title/
+  // content/mode-flag loading happens reactively inside NotePane once its
+  // noteId prop changes (see NotePane.svelte), mirroring how the editor
+  // components one level down already resync on their own noteId prop.
+  // This just owns the app-wide "what's selected" state and, when asked,
+  // chases keyboard focus into the pane once it's rendered the new note.
+  //
+  // activeParentId (which parent new notes land under) deliberately stays
+  // tied to the primary pane only, even when the secondary pane is
+  // focused - keeping it pane-aware too wasn't worth the extra state for
+  // what's a fairly rare combination (creating a note while the secondary
+  // pane specifically has focus).
+  const selectNote = (note: NoteRecord, focusEditor = true) => {
+    if (focusedPane === 'secondary') {
+      splitNoteId = note.id;
+    } else {
+      selectedId.set(note.id);
+      activeParentId.set(note.parentId);
+    }
+    if (focusEditor) requestAnimationFrame(() => activePaneRef()?.focus());
   };
 
-  const selectNote = (note: NoteRecord, focusEditor = true) => {
-    selectedId.set(note.id);
-    activeParentId.set(note.parentId);
-    title = note.title;
-    noteText = note.content;
-    isMarkdownActive = note.isMarkdown;
-    isLockedActive = note.isLocked;
-    showLineNumbersActive = note.showLineNumbers;
-    isEditorModeActive = note.isEditorMode;
-    // Date/time-named notes (see createNoteIn) are NOT auto-derived from
-    // typed content - only a truly untitled note is, so the timestamp name
-    // sticks around as a stable identifier unless renamed manually.
-    titleAutoDerive = note.title === 'Untitled' || note.title.trim() === '';
-    // Plain-text undo history is per-note - PlainTextEditor resets its own
-    // stacks internally when its noteId prop changes, so there's nothing to
-    // reset here.
-    if (focusEditor) requestAnimationFrame(() => activeTextEditorRef()?.focus());
+  // Shared onNavigate for both NotePane instances (wiki-link clicks,
+  // backlink-popover clicks) - relies on a pane's own onFocus (fired on
+  // mousedown, before the click that leads here) having already run, so
+  // focusedPane correctly reflects whichever pane was actually clicked in
+  // by the time selectNote below decides where to route the navigation.
+  const handleNavigate = (id: number) => {
+    const note = $notes.find((n) => n.id === id);
+    if (note) selectNote(note, true);
   };
 
   // focusEditor defaults to false here: opening a note from the sidebar (click,
@@ -367,7 +415,7 @@
     const active = document.activeElement;
     if (treeEl && active && treeEl.contains(active)) {
       if ($selectedId == null) return;
-      activeTextEditorRef()?.focus();
+      activePaneRef()?.focus();
       return;
     }
     // Focus the row for whichever note is currently open (falls back to
@@ -387,108 +435,12 @@
     void openSearchResult(match.id, match.databaseId);
   };
 
-  const saveActiveNote = async () => {
-    if (!$selectedId) return;
-    // Locked notes only ever reach here via a checkbox toggle (see
-    // onReadOnlyChecked in MarkdownEditor.svelte) - route through the
-    // narrow exception that persists just the content, rather than the
-    // general save, which rejects content changes on a locked note.
-    const saved = isLockedActive
-      ? await notesStore.saveChecklistToggle($selectedId, noteText)
-      : await notesStore.saveNote({ id: $selectedId, title, content: noteText });
-    notesStore.applyUpdatedNote(saved);
-    status.set('Saved');
-  };
+  // Saving, title-derivation, Markdown/Editor-mode toggling, Format, and
+  // insert-at-cursor are all NotePane's own concerns now (see
+  // NotePane.svelte) - these just dispatch to whichever pane is active.
+  const insertAtCursor = (text: string) => activePaneRef()?.insertAtCursor(text);
 
-  const scheduleSave = () => {
-    status.set('Saving…');
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      void saveActiveNote();
-    }, 250);
-  };
-
-  // Not guarded by isLockedActive: every OTHER path into this (typing in
-  // the plain textarea, insertAtCursor, plain-text undo/redo) is already
-  // blocked upstream while locked (native readonly / explicit checks), so
-  // in practice this only ever runs locked via the Markdown editor's
-  // checkbox-toggle exception below - which is exactly the one edit a
-  // locked note should still save.
-  const handleEditorInput = () => {
-    if (titleAutoDerive) {
-      title = deriveTitleFromContent(noteText, isMarkdownActive);
-    }
-    scheduleSave();
-  };
-
-  // Also fires for a checkbox toggle in a locked note (see
-  // onReadOnlyChecked in MarkdownEditor.svelte) - a locked note's text is
-  // read-only, but ticking a finished checklist's items is exactly the
-  // kind of edit locking is meant to still allow, and it should save and
-  // bump updated_at the same as any other edit.
-  const handleMarkdownEditorUpdate = (markdown: string) => {
-    noteText = markdown;
-    handleEditorInput();
-  };
-
-  const handlePlainEditorUpdate = (text: string) => {
-    noteText = text;
-    handleEditorInput();
-  };
-
-  const handleTitleInput = () => {
-    if (isLockedActive) return;
-    titleAutoDerive = false;
-    scheduleSave();
-  };
-
-  const toggleMarkdown = () => {
-    if ($selectedId == null || isLockedActive) return;
-    const next = !isMarkdownActive;
-    isMarkdownActive = next;
-    // Switching modes swaps the textarea/MarkdownEditor DOM out from under
-    // whichever one was focused - wait for that swap to render, then focus
-    // whichever editor is now showing so typing can continue immediately.
-    // While editor mode is on, neither actually (re)mounts - it stays the
-    // one editor regardless of this flag - so there's no DOM swap to chase.
-    if (!isEditorModeActive) {
-      void tick().then(() => {
-        if (next) {
-          markdownEditorRef?.focus();
-        } else {
-          plainEditorRef?.focus();
-        }
-      });
-    }
-    void notesStore.saveNote({ id: $selectedId, isMarkdown: next }).then((saved) => {
-      notesStore.applyUpdatedNote(saved);
-    });
-  };
-
-  const insertAtCursor = (text: string) => {
-    if (isLockedActive) return;
-    activeTextEditorRef()?.insertAtCursor(text);
-  };
-
-  // Always available regardless of isEditorModeActive (Alt+F, and the
-  // ActionToolbar button) - each editor's own format() resolves the note's
-  // persisted language (falling back to auto-detection) and reformats just
-  // the current selection if there is one, otherwise the whole note. The
-  // resulting edit flows back through that editor's normal onUpdate wiring
-  // (same as typing), so it autosaves the same way any other edit does.
-  // Editor-mode only: PlainTextEditor/MarkdownEditor don't implement
-  // format() (and Alt+F/the toolbar button are hidden outside editor mode
-  // to match), since Format only makes sense against the syntax-highlighted
-  // CodeMirror view.
-  const formatActiveNote = async () => {
-    if ($selectedId == null || isLockedActive || !isEditorModeActive) return;
-    try {
-      await editorModeEditorRef?.format();
-      status.set('Formatted');
-    } catch (err) {
-      status.set(err instanceof Error ? err.message : 'Format failed');
-    }
-  };
+  const formatActiveNote = () => void activePaneRef()?.format();
 
   const insertNewline = () => insertAtCursor('-=-=-=-=-=-=-=-=-= =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-\n');
 
@@ -535,10 +487,9 @@
 
   const commitRename = async (key: string, value: string) => {
     const result = await notesStore.commitRename(key, value);
-    if (result && $selectedId === result.id) {
-      title = result.updated.title;
-      titleAutoDerive = false;
-    }
+    if (!result) return;
+    primaryPaneRef?.syncRenamedTitle(result.id, result.updated.title);
+    secondaryPaneRef?.syncRenamedTitle(result.id, result.updated.title);
   };
 
   const duplicateNote = async (id: number) => {
@@ -569,23 +520,6 @@
     }
   };
 
-  const toggleLock = async (id: number) => {
-    const saved = await notesStore.toggleLock(id);
-    if (saved && $selectedId === id) isLockedActive = saved.isLocked;
-  };
-
-  const toggleEditorMode = async (id: number) => {
-    const saved = await notesStore.toggleEditorMode(id);
-    if (!saved || $selectedId !== id) return;
-    isEditorModeActive = saved.isEditorMode;
-    // Same DOM-swap-loses-focus issue as toggleMarkdown - flipping this
-    // flag mounts a different editor component entirely (EditorModeEditor
-    // vs. Markdown/PlainTextEditor), so whatever was focused is gone; wait
-    // for the swap to render, then focus whichever editor is now showing.
-    await tick();
-    activeTextEditorRef()?.focus();
-  };
-
   const showToast = (message: string) => {
     toastMessage = message;
     if (toastTimer) clearTimeout(toastTimer);
@@ -609,24 +543,6 @@
     }
   };
 
-  // Navigates to the note matching `rawTitle` (case-insensitive, trimmed -
-  // same rule wikiLinks.ts's resolveWikiLinkTitle uses), or creates one
-  // with that exact title at the root level if none exists yet - the
-  // "click a red link to create the page" wiki convention. Root level
-  // (not $activeParentId) is a predictable landing spot regardless of
-  // whatever the sidebar happens to be scrolled/expanded to.
-  const openWikiLink = async (rawTitle: string) => {
-    const needle = rawTitle.trim().toLowerCase();
-    const existing = needle ? $notes.find((n) => n.title.trim().toLowerCase() === needle) : undefined;
-    if (existing) {
-      selectNote(existing, true);
-      return;
-    }
-    const created = await notesStore.createNoteIn(null, rawTitle.trim() || 'Untitled');
-    selectNote(created, true);
-    status.set(`Created note "${created.title}"`);
-  };
-
   const deleteNoteById = async (id: number) => {
     const descendantIds = notesStore.collectDescendantNoteIds(id);
     const message =
@@ -636,13 +552,18 @@
     if (!(await confirmDialog(message))) return;
 
     const result = await notesStore.deleteNote(id);
-    if (result.removedSelected) {
-      if (result.nextNote) {
-        selectNote(result.nextNote);
-      } else {
-        title = 'Untitled';
-        noteText = '';
-      }
+    // notesStore.deleteNote already clears the selectedId store itself when
+    // there's no next note - NotePane's own noteId-reactive load picks that
+    // up and resets to its empty state, nothing to do here for that case.
+    if (result.removedSelected && result.nextNote) {
+      selectNote(result.nextNote);
+    }
+    // notesStore.deleteNote only knows about the selectedId store, not the
+    // secondary pane's splitNoteId - fall it back the same way (to
+    // whatever the primary pane fell back to, or empty) if the deleted
+    // note or one of its now-deleted descendants was showing there.
+    if (splitNoteId != null && (splitNoteId === id || descendantIds.has(splitNoteId))) {
+      splitNoteId = result.nextNote?.id ?? null;
     }
   };
 
@@ -689,77 +610,16 @@
         { label: 'Cut', action: () => notesStore.cutNote(noteId) },
         { label: 'Export to .txt…', action: () => void exportNoteToTxt(noteId) },
         { label: '', separator: true },
-        { label: locked ? 'Unlock' : 'Lock', action: () => void toggleLock(noteId) },
+        { label: locked ? 'Unlock' : 'Lock', action: () => void notesStore.toggleLock(noteId) },
         { label: '', separator: true },
         { label: 'Delete', danger: true, action: () => void deleteNoteById(noteId) },
       ],
     };
   };
 
-  const openEditorMenu = async (event: MouseEvent) => {
-    if ($selectedId == null) return;
-    const id = $selectedId;
-    const x = event.clientX;
-    const y = event.clientY;
-    // Plugins (contextMenu.registerEditorItem) get the same context object
-    // this menu itself uses for the link check below - only the Markdown
-    // editor can compute one (links/task items only exist there), so a
-    // plain-text note gets a minimal context with isMarkdown: false.
-    const pluginContext: EditorContext = !isEditorModeActive && isMarkdownActive && markdownEditorRef
-      ? markdownEditorRef.getContext(event)
-      : { noteId: id, isMarkdown: false, taskItem: null, linkHref: null, selectionText: '' };
-    const linkHref = pluginContext.linkHref;
-    const pluginMenuItems: ContextMenuItem[] = getEditorContextMenuItemsFor(pluginContext).map((item) => ({
-      label: item.label,
-      action: () => item.action(pluginContext),
-    }));
-
-    // Text-only: Copy/Cut/Paste here act purely on selected text and the OS
-    // clipboard, like a normal text editor's right-click menu - never on
-    // whole-note move/duplicate (that's what right-clicking the note itself
-    // in the sidebar, and drag-and-drop, are for - see openNoteMenu's "Move
-    // to…"). Disabled rather than falling back to a note-level operation
-    // when there's nothing to act on, so this menu never has a surprise
-    // side effect on the sidebar tree.
-    const selectedText = activeTextEditorRef()?.getSelectedText() ?? '';
-    const copySelection = () => void writeClipboardText(selectedText);
-    const cutSelection = () => {
-      // Locked notes can't have their content edited - fall back to a
-      // non-destructive copy rather than silently failing to delete.
-      if (isLockedActive) {
-        void writeClipboardText(selectedText);
-        return;
-      }
-      const cutText = activeTextEditorRef()?.cutSelection() ?? '';
-      if (cutText) void writeClipboardText(cutText);
-    };
-    const osClipboardText = (await readText().catch(() => null)) ?? '';
-    const pasteSelection = () => insertAtCursor(osClipboardText);
-
-    contextMenu = {
-      x,
-      y,
-      items: [
-        ...(linkHref
-          ? [
-              { label: 'Open link', action: () => void openLink(linkHref) },
-              { label: 'Copy link address', action: () => void writeClipboardText(linkHref) },
-              { label: '', separator: true },
-            ]
-          : []),
-        { label: 'Copy', disabled: !selectedText, action: copySelection },
-        { label: 'Cut', disabled: !selectedText, action: cutSelection },
-        { label: 'Paste', disabled: !osClipboardText, action: pasteSelection },
-        { label: '', separator: true },
-        { label: isLockedActive ? 'Unlock' : 'Lock', action: () => void toggleLock(id) },
-        ...(pluginMenuItems.length ? [{ label: '', separator: true }, ...pluginMenuItems] : []),
-      ],
-    };
-  };
-
   $: treeNodeProps = {
     expandedNotes: $expandedNotes,
-    selectedNoteId: $selectedId,
+    selectedNoteId: focusedNoteId,
     focusedKey: $focusedKey,
     renamingKey: $renamingKey,
     cutId: $clipboard?.mode === 'cut' ? $clipboard.id : null,
@@ -866,13 +726,6 @@
     void settingsService.saveVimMode(enabled);
   };
 
-  const handleLanguageChange = (language: string) => {
-    if ($selectedId == null) return;
-    void notesStore.saveNote({ id: $selectedId, language }).then((saved) => {
-      notesStore.applyUpdatedNote(saved);
-    });
-  };
-
   const setDateTimeNoteNames = (enabled: boolean) => {
     dateTimeNoteNamesEnabled = enabled;
     void settingsService.saveDateTimeNoteNames(enabled);
@@ -897,11 +750,12 @@
   // concern. Not gated on isLockedActive, since this is a display
   // preference rather than an edit to the note's protected text (and
   // update_note's lock guard only rejects title/content changes anyway, so
-  // this always goes through even on a locked note).
+  // this always goes through even on a locked note). NotePane derives
+  // showLineNumbers straight from the notes store (see NotePane.svelte),
+  // so there's no local flag here to resync after the toggle.
   const toggleLineNumbers = async (id: number) => {
-    if (!isEditorModeActive) return;
-    const saved = await notesStore.toggleLineNumbers(id);
-    if (saved && $selectedId === id) showLineNumbersActive = saved.showLineNumbers;
+    if (!$notes.find((n) => n.id === id)?.isEditorMode) return;
+    await notesStore.toggleLineNumbers(id);
   };
 
   // Checked once on startup only (called from onMount, never polled/re-run
@@ -960,7 +814,7 @@
           } },
         { label: '', separator: true },
         { label: isLockedActive ? 'Unlock' : 'Lock', disabled: $selectedId == null, action: () => {
-            if ($selectedId != null) void toggleLock($selectedId);
+            if ($selectedId != null) void notesStore.toggleLock($selectedId);
           } },
         { label: 'Export to .txt…', disabled: $selectedId == null, action: () => {
             if ($selectedId != null) void exportNoteToTxt($selectedId);
@@ -1041,22 +895,22 @@
 
     if (event.altKey && event.key.toLowerCase() === 'l') {
       event.preventDefault();
-      if ($selectedId != null) void toggleLock($selectedId);
+      if (focusedNoteId != null) void notesStore.toggleLock(focusedNoteId);
     }
 
     if (event.altKey && event.key.toLowerCase() === 'd') {
       event.preventDefault();
-      if ($selectedId != null) void deleteNoteById($selectedId);
+      if (focusedNoteId != null) void deleteNoteById(focusedNoteId);
     }
 
     if (event.altKey && event.key.toLowerCase() === 'm') {
       event.preventDefault();
-      toggleMarkdown();
+      activePaneRef()?.toggleMarkdown();
     }
 
     if (event.altKey && event.key.toLowerCase() === 'e') {
       event.preventDefault();
-      if ($selectedId != null) void toggleEditorMode($selectedId);
+      if (focusedNoteId != null) void activePaneRef()?.toggleEditorMode();
     }
 
     if (event.altKey && event.key.toLowerCase() === 'b') {
@@ -1071,10 +925,7 @@
 
     if (event.altKey && event.key.toLowerCase() === 'o') {
       event.preventDefault();
-      if (!isEditorModeActive && isMarkdownActive) {
-        const href = markdownEditorRef?.getLinkHrefAtCursor();
-        if (href) void openLink(href);
-      }
+      activePaneRef()?.openLinkAtCursor();
     }
 
     if (event.altKey && event.key.toLowerCase() === 'f') {
@@ -1084,7 +935,12 @@
 
     if (event.altKey && event.key.toLowerCase() === 'r') {
       event.preventDefault();
-      if ($selectedId != null) void toggleLineNumbers($selectedId);
+      if (focusedNoteId != null) void toggleLineNumbers(focusedNoteId);
+    }
+
+    if (event.altKey && event.key.toLowerCase() === 'v') {
+      event.preventDefault();
+      toggleSplitView();
     }
 
     if (event.key === 'Escape') {
@@ -1262,7 +1118,9 @@
     onShowSettings={() => (settingsOpen = true)}
     onFormat={formatActiveNote}
     editorModeEnabled={isEditorModeActive}
-    onSearch={() => editorModeEditorRef?.openSearch()}
+    onSearch={() => activePaneRef()?.openSearch()}
+    {splitViewEnabled}
+    onToggleSplitView={toggleSplitView}
   />
 
   <div class="shell">
@@ -1332,80 +1190,42 @@
 
   <SidebarResizer bind:width={sidebarWidth} />
 
-  <section class="editor-pane">
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <header class="topbar" on:contextmenu|preventDefault={openEditorMenu}>
-      <div class="title-block">
-        <input
-          bind:value={title}
-          class="title"
-          placeholder="Untitled"
-          readonly={isLockedActive}
-          on:input={handleTitleInput}
-        />
-      </div>
-      <div class="header-meta">
-        {#if $selectedId != null}
-          <NoteInfoPopover
-            createdAt={selectedNoteCreatedAt}
-            updatedAt={selectedNoteUpdatedAt}
-            effectiveLanguage={selectedNoteEffectiveLanguage}
-            onLanguageChange={handleLanguageChange}
-            onError={(msg) => status.set(msg)}
-            backlinks={selectedNoteBacklinks}
-            onOpenBacklink={(id) => void openNote(id, true)}
-          />
-        {/if}
-        {#if isLockedActive}
-          <svg class="icon lock-indicator" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-label="Locked">
-            <rect x="3.5" y="7" width="9" height="7" rx="1.2" />
-            <path d="M5.5 7V4.5a2.5 2.5 0 0 1 5 0V7" />
-          </svg>
-        {/if}
-      </div>
-    </header>
-
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="editor-content" on:contextmenu|preventDefault={openEditorMenu}>
-      {#if isEditorModeActive}
-        <EditorModeEditor
-          bind:this={editorModeEditorRef}
-          content={noteText}
-          noteId={$selectedId ?? -1}
-          onUpdate={handlePlainEditorUpdate}
-          placeholder="Start typing instantly..."
-          editable={!isLockedActive}
-          showLineNumbers={showLineNumbersActive}
-          vimMode={vimModeEnabled}
-          themeMode={theme}
-          language={selectedNoteLanguage}
-          isMarkdown={isMarkdownActive}
-        />
-      {:else if isMarkdownActive}
-        <MarkdownEditor
-          bind:this={markdownEditorRef}
-          content={noteText}
-          noteId={$selectedId ?? -1}
-          onUpdate={handleMarkdownEditorUpdate}
+  <div class="content-column">
+    <div class="panes">
+      <div class="pane-slot" style="flex-grow: {splitViewEnabled ? splitRatio : 1}">
+        <NotePane
+          bind:this={primaryPaneRef}
+          bind:isMarkdownActive={primaryIsMarkdownActive}
+          bind:isLockedActive={primaryIsLockedActive}
+          bind:isEditorModeActive={primaryIsEditorModeActive}
+          noteId={$selectedId}
+          onNavigate={handleNavigate}
           onOpenLink={openLink}
-          onOpenWikiLink={openWikiLink}
-          noteTitles={$notes.map((n) => ({ id: n.id, title: n.title }))}
-          placeholder="Start typing instantly..."
-          editable={!isLockedActive}
           vimMode={vimModeEnabled}
-          themeMode={theme}
+          {theme}
+          focused={!splitViewEnabled || focusedPane === 'primary'}
+          onFocus={() => focusPane('primary')}
         />
-      {:else}
-        <PlainTextEditor
-          bind:this={plainEditorRef}
-          content={noteText}
-          noteId={$selectedId ?? -1}
-          onUpdate={handlePlainEditorUpdate}
-          placeholder="Start typing instantly..."
-          editable={!isLockedActive}
-          showLineNumbers={showLineNumbersActive}
-          vimMode={vimModeEnabled}
-        />
+      </div>
+
+      {#if splitViewEnabled}
+        <PaneResizer bind:ratio={splitRatio} />
+
+        <div class="pane-slot" style="flex-grow: {1 - splitRatio}">
+          <NotePane
+            bind:this={secondaryPaneRef}
+            bind:isMarkdownActive={secondaryIsMarkdownActive}
+            bind:isLockedActive={secondaryIsLockedActive}
+            bind:isEditorModeActive={secondaryIsEditorModeActive}
+            noteId={splitNoteId}
+            onNavigate={handleNavigate}
+            onOpenLink={openLink}
+            vimMode={vimModeEnabled}
+            {theme}
+            focused={focusedPane === 'secondary'}
+            onFocus={() => focusPane('secondary')}
+          />
+        </div>
       {/if}
     </div>
 
@@ -1418,9 +1238,9 @@
       {isLockedActive}
       onSearchKeydown={handleTreeKeydown}
       onGoToSearchMatch={goToSearchMatch}
-      onToggleMarkdown={toggleMarkdown}
+      onToggleMarkdown={() => activePaneRef()?.toggleMarkdown()}
     />
-  </section>
+  </div>
   </div>
 </div>
 {/if}
@@ -1547,7 +1367,8 @@
     color-scheme: dark;
   }
 
-  :global(body.resizing-sidebar) {
+  :global(body.resizing-sidebar),
+  :global(body.resizing-panes) {
     cursor: col-resize;
     user-select: none;
   }
@@ -1740,54 +1561,26 @@
     min-height: 24px;
   }
 
-  .editor-pane {
+  .content-column {
     flex: 1;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .editor-content {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-
-  .topbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.75rem 0.9rem;
-    border-bottom: 1px solid var(--border);
-    gap: 0.75rem;
-  }
-
-  .title-block {
     display: flex;
     flex-direction: column;
     min-width: 0;
+    min-height: 0;
+  }
+
+  .panes {
     flex: 1;
-  }
-
-  .title {
-    border: 0;
-    background: transparent;
-    color: inherit;
-    font-size: 0.95rem;
-    width: 100%;
-    outline: none;
-  }
-
-  .header-meta {
     display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-shrink: 0;
+    min-height: 0;
   }
 
-  .lock-indicator {
-    flex-shrink: 0;
-    color: var(--muted);
+  .pane-slot {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex-shrink: 1;
+    flex-basis: 0;
   }
 
   .link-toast {

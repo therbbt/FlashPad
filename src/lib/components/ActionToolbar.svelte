@@ -14,6 +14,8 @@
   export let onFormat: () => void;
   export let editorModeEnabled = false;
   export let onSearch: () => void;
+  export let splitViewEnabled = false;
+  export let onToggleSplitView: () => void;
 
   let notesButton: HTMLButtonElement;
   let insertButton: HTMLButtonElement;
@@ -68,6 +70,21 @@
       </button>
     {/if}
 
+    <button
+      class="toolbar-btn"
+      class:active={splitViewEnabled}
+      on:click={onToggleSplitView}
+      aria-label="Split view (Alt+V)"
+      aria-pressed={splitViewEnabled}
+      title="Split view (Alt+V)"
+    >
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="1.5" y="2.5" width="13" height="11" rx="1.2" />
+        <path d="M8 2.5v11" />
+      </svg>
+      <span>Split</span>
+    </button>
+
     <button class="toolbar-btn" on:click={onShowShortcuts} aria-label="Keyboard shortcuts">
       <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
         <circle cx="8" cy="8" r="6.5" />
@@ -116,6 +133,12 @@
   .toolbar-btn:hover {
     background: var(--panel-2);
     color: var(--text);
+  }
+
+  .toolbar-btn.active,
+  .toolbar-btn.active:hover {
+    background: var(--panel-2);
+    color: var(--accent);
   }
 
   .toolbar-btn .caret {

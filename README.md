@@ -10,6 +10,12 @@ jot something down in a tree of notes, and hide it again.
   configurable in settings) to show/hide the window instantly.
 - **Tree-structured notes** — create, rename, delete, duplicate, and move
   notes and subnotes, by drag-and-drop or with `Alt+↑`/`Alt+↓`.
+- **Split view** (`Alt+V`, or the toolbar toggle) — open a second note
+  side by side with a draggable divider between them. Click into a pane to
+  focus it; clicking a note in the sidebar then loads it into whichever
+  pane has focus. Both panes are fully independent and support everything
+  a single note view does (Editor mode, Format, lock, wiki-links, the
+  whole feature set).
 - **Markdown editor** — rich text editing powered by Tiptap, with markdown
   shortcuts for headings and formatting. Links open in your default browser
   (Ctrl+Click, a plain click on a locked note, right-click, or Alt+O). Paste
@@ -109,6 +115,7 @@ jot something down in a tree of notes, and hide it again.
 | `Alt+D` | Delete the current note (and its subnotes) |
 | `Alt+M` | Toggle Markdown view |
 | `Alt+E` | Toggle Editor mode (syntax highlighting, search/replace, language detection) |
+| `Alt+V` | Toggle split view (a second note pane side by side) |
 | `Alt+F` | Format the current selection, or the whole note if nothing is selected (Editor mode only) |
 | `Alt+R` | Toggle the line-number gutter (Editor mode only) |
 | `Ctrl`/`Cmd+F` | Open search/replace (Editor mode only) |

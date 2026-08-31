@@ -20,6 +20,7 @@
         ['Alt+D', 'Delete the current note (and its subnotes)'],
         ['Alt+M', 'Toggle Markdown view'],
         ['Alt+E', 'Toggle Editor mode (syntax highlighting, search/replace, language detection)'],
+        ['Alt+V', 'Toggle split view (a second note pane side by side)'],
         ['Alt+↑ / Alt+↓', 'Move the current note up/down among its siblings'],
         ['Alt+→', 'Nest the current note under its previous sibling'],
         ['Alt+←', "Move the current note out to its parent's level"],

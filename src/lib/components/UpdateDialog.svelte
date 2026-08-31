@@ -117,7 +117,7 @@
 
     {#if displayBody}
       <div class="notes">
-        <MarkdownEditor content={displayBody} noteId={0} onUpdate={() => {}} onOpenLink={openNotesLink} editable={false} />
+        <MarkdownEditor content={displayBody} noteId={0} onUpdate={() => {}} onOpenLink={openNotesLink} onOpenWikiLink={() => {}} editable={false} />
       </div>
     {:else}
       <p class="notes empty">No release notes provided.</p>
