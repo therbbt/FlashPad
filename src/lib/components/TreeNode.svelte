@@ -96,7 +96,6 @@
   on:click={() => {
     onFocusItem(key);
     onSelectNote(item.id, item.databaseId);
-    if (hasChildren) onToggleExpand(item.id);
   }}
   on:contextmenu|preventDefault|stopPropagation={(e) => {
     onFocusItem(key);
@@ -107,7 +106,6 @@
       e.preventDefault();
       onFocusItem(key);
       onSelectNote(item.id, item.databaseId);
-      if (hasChildren) onToggleExpand(item.id);
     }
   }}
   on:dragstart={(e) => {
@@ -137,7 +135,18 @@
         <path d="M3 1 L7 5 L3 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
     </span>
-    <svg class="icon folder-icon" width="17" height="17" viewBox="0 0 16 16">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <svg
+      class="icon folder-icon"
+      width="17"
+      height="17"
+      viewBox="0 0 16 16"
+      on:click|stopPropagation={() => {
+        onFocusItem(key);
+        onToggleExpand(item.id);
+      }}
+    >
       <path
         fill="currentColor"
         d="M1.5 3A1.5 1.5 0 0 1 3 1.5h3.17a1.5 1.5 0 0 1 1.06.44l.83.82H13A1.5 1.5 0 0 1 14.5 4.26V12.5A1.5 1.5 0 0 1 13 14H3a1.5 1.5 0 0 1-1.5-1.5V3Z"

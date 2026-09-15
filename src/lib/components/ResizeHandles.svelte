@@ -1,6 +1,14 @@
 <script lang="ts">
   type Direction = 'East' | 'North' | 'NorthEast' | 'NorthWest' | 'South' | 'SouthEast' | 'SouthWest' | 'West';
 
+  // When the window is floating (not squared), the visible rounded shell
+  // sits var(--window-shadow-margin) in from the true window edges - these
+  // hit zones need to span that whole gap, not just a few px right at the
+  // true edge, or there's a dead band you can't grab to resize from.
+  // Squared (maximized/snapped) collapses back to a normal thin edge since
+  // the shell is flush with the window and there's no gap to span.
+  export let squared = false;
+
   const isTauriRuntime = () => typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 
   const startResize = (direction: Direction) => async (event: MouseEvent) => {
@@ -9,6 +17,10 @@
     const { getCurrentWindow } = await import('@tauri-apps/api/window');
     await getCurrentWindow().startResizeDragging(direction);
   };
+
+  $: if (typeof document !== 'undefined') {
+    document.documentElement.style.setProperty('--resize-handle-thickness', squared ? '4px' : '16px');
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -37,39 +49,39 @@
 
   .edge.top {
     top: 0;
-    left: 6px;
-    right: 6px;
-    height: 4px;
+    left: var(--resize-handle-thickness, 4px);
+    right: var(--resize-handle-thickness, 4px);
+    height: var(--resize-handle-thickness, 4px);
     cursor: ns-resize;
   }
 
   .edge.bottom {
     bottom: 0;
-    left: 6px;
-    right: 6px;
-    height: 4px;
+    left: var(--resize-handle-thickness, 4px);
+    right: var(--resize-handle-thickness, 4px);
+    height: var(--resize-handle-thickness, 4px);
     cursor: ns-resize;
   }
 
   .edge.left {
-    top: 6px;
-    bottom: 6px;
+    top: var(--resize-handle-thickness, 4px);
+    bottom: var(--resize-handle-thickness, 4px);
     left: 0;
-    width: 4px;
+    width: var(--resize-handle-thickness, 4px);
     cursor: ew-resize;
   }
 
   .edge.right {
-    top: 6px;
-    bottom: 6px;
+    top: var(--resize-handle-thickness, 4px);
+    bottom: var(--resize-handle-thickness, 4px);
     right: 0;
-    width: 4px;
+    width: var(--resize-handle-thickness, 4px);
     cursor: ew-resize;
   }
 
   .corner {
-    width: 6px;
-    height: 6px;
+    width: var(--resize-handle-thickness, 4px);
+    height: var(--resize-handle-thickness, 4px);
   }
 
   .corner.top-left {

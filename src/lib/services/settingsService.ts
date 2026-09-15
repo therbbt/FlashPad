@@ -1,5 +1,7 @@
 import { DEFAULT_DARK_PALETTE_ID, DEFAULT_LIGHT_PALETTE_ID } from '../theme/palettes';
 
+export type NoteNamingMode = 'untitled' | 'dateTime' | 'date';
+
 export interface FlashPadSettings {
   theme: 'dark' | 'light';
   lightPaletteId: string;
@@ -12,10 +14,11 @@ export interface FlashPadSettings {
   // non-vim users are never surprised by modal behavior - only applies to
   // PlainTextEditor, not the Markdown/rich-text editor.
   vimMode: boolean;
-  // New notes are titled with their creation date/time instead of
-  // "Untitled". On by default; "Untitled" is the fallback when this is
-  // turned off (matching the app's original behavior).
-  dateTimeNoteNames: boolean;
+  // New notes are titled with their creation date/time (or date only)
+  // instead of "Untitled". Defaults to 'dateTime'; 'untitled' is the
+  // fallback when this is turned off (matching the app's original
+  // behavior).
+  noteNamingMode: NoteNamingMode;
   // Plugin ids (matching their manifest's "id" field) the user has
   // enabled - plugins are loaded from disk but only activated if listed
   // here, off by default per plugin so installing one doesn't silently
@@ -31,7 +34,7 @@ const DEFAULTS: FlashPadSettings = {
   darkPaletteId: DEFAULT_DARK_PALETTE_ID,
   dismissedUpdateVersion: null,
   vimMode: false,
-  dateTimeNoteNames: true,
+  noteNamingMode: 'dateTime',
   enabledPlugins: [],
 };
 
@@ -41,14 +44,19 @@ export class SettingsService {
   async load(): Promise<FlashPadSettings> {
     if (this.cached) return this.cached;
     const stored = typeof window !== 'undefined' ? window.localStorage.getItem(STORAGE_KEY) : null;
-    const parsed = stored ? (JSON.parse(stored) as Partial<FlashPadSettings>) : {};
+    const parsed = stored ? (JSON.parse(stored) as Partial<FlashPadSettings> & { dateTimeNoteNames?: boolean }) : {};
+    // Pre-tri-state settings only had an on/off dateTimeNoteNames boolean -
+    // carry it forward as 'dateTime'/'untitled' so upgrading doesn't reset
+    // an existing choice back to the default.
+    const migratedNamingMode: NoteNamingMode | undefined =
+      parsed.noteNamingMode ?? (parsed.dateTimeNoteNames === undefined ? undefined : parsed.dateTimeNoteNames ? 'dateTime' : 'untitled');
     this.cached = {
       theme: parsed.theme ?? DEFAULTS.theme,
       lightPaletteId: parsed.lightPaletteId ?? DEFAULTS.lightPaletteId,
       darkPaletteId: parsed.darkPaletteId ?? DEFAULTS.darkPaletteId,
       dismissedUpdateVersion: parsed.dismissedUpdateVersion ?? DEFAULTS.dismissedUpdateVersion,
       vimMode: parsed.vimMode ?? DEFAULTS.vimMode,
-      dateTimeNoteNames: parsed.dateTimeNoteNames ?? DEFAULTS.dateTimeNoteNames,
+      noteNamingMode: migratedNamingMode ?? DEFAULTS.noteNamingMode,
       enabledPlugins: parsed.enabledPlugins ?? DEFAULTS.enabledPlugins,
     };
     return this.cached;
@@ -86,8 +94,8 @@ export class SettingsService {
     await this.save({ vimMode });
   }
 
-  async saveDateTimeNoteNames(dateTimeNoteNames: boolean): Promise<void> {
-    await this.save({ dateTimeNoteNames });
+  async saveNoteNamingMode(noteNamingMode: NoteNamingMode): Promise<void> {
+    await this.save({ noteNamingMode });
   }
 
   async saveEnabledPlugins(enabledPlugins: string[]): Promise<void> {

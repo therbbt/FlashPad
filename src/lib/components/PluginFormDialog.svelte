@@ -65,7 +65,7 @@
 <svelte:window on:keydown={handleKeydown} on:mousedown={handleDropdownOutsideClick} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="overlay" on:mousedown={handleOutsideClick}>
+<div class="overlay" on:mousedown={handleOutsideClick} on:contextmenu|preventDefault>
   <div class="panel" bind:this={panelEl} role="dialog" aria-modal="true" aria-label={title}>
     <h2 class="title">{title}</h2>
     <div class="fields">

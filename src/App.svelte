@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import type { NoteRecord } from './lib/services/notesService';
-  import { SettingsService, type FlashPadSettings } from './lib/services/settingsService';
+  import { SettingsService, type FlashPadSettings, type NoteNamingMode } from './lib/services/settingsService';
   import { DEFAULT_DARK_PALETTE_ID, DEFAULT_LIGHT_PALETTE_ID, applyPalette, getPalette } from './lib/theme/palettes';
   import { HotkeyService } from './lib/services/hotkeyService';
   import { DatabaseService, type AppState } from './lib/services/databaseService';
@@ -85,6 +85,18 @@
   let contextMenu: { x: number; y: number; items: ContextMenuItem[] } | null = null;
   let confirmState: { message: string; resolve: (value: boolean) => void } | null = null;
   let shortcutsOpen = false;
+  // True while the window is maximized, fullscreen, or WM-snapped to a
+  // screen half - see TitleBar.svelte's updateSquared for the detection.
+  let windowSquared = false;
+  // The shell's shadow margin is a CSS custom property (inherited by every
+  // overlay/dialog's own `inset`, not just .app-shell - see app.css) rather
+  // than a class-scoped value, since dialogs render as App.svelte siblings
+  // outside .app-shell and wouldn't otherwise see a scoped one. Squaring
+  // off collapses it to 0 so nothing leaves a gap against a maximized/
+  // snapped window's true edges.
+  $: if (typeof document !== 'undefined') {
+    document.documentElement.style.setProperty('--window-shadow-margin', windowSquared ? '0px' : '16px');
+  }
   let settingsOpen = false;
   let settingsInitialTab: 'general' | 'database' = 'general';
   let markdownHelpOpen = false;
@@ -118,7 +130,7 @@
   let secondaryIsLockedActive = false;
   let secondaryIsEditorModeActive = false;
   let vimModeEnabled = false;
-  let dateTimeNoteNamesEnabled = true;
+  let noteNamingMode: NoteNamingMode = 'dateTime';
   let enabledPluginIds: string[] = [];
   let primaryPaneRef: NotePane | undefined;
   let secondaryPaneRef: NotePane | undefined;
@@ -455,6 +467,11 @@
     return `${y}-${mo}-${d} ${h}:${mi}:${s}`;
   };
 
+  const formatLocalDate = (date: Date): string => {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  };
+
   const insertTimestamp = () => {
     insertAtCursor(`${formatLocalTimestamp(new Date())}\n`);
   };
@@ -467,7 +484,12 @@
   // ---------- creation ----------
 
   const createNoteIn = async (parentId: number | null) => {
-    const defaultTitle = dateTimeNoteNamesEnabled ? formatLocalTimestamp(new Date()) : 'Untitled';
+    const defaultTitle =
+      noteNamingMode === 'dateTime'
+        ? formatLocalTimestamp(new Date())
+        : noteNamingMode === 'date'
+          ? formatLocalDate(new Date())
+          : 'Untitled';
     selectNote(await notesStore.createNoteIn(parentId, defaultTitle));
   };
 
@@ -588,6 +610,7 @@
         { label: 'Paste', disabled: $clipboard == null, action: () => void notesStore.pasteNote($activeParentId) },
         { label: '', separator: true },
         { label: 'Refresh', action: () => void notesStore.refreshAll() },
+        { label: 'Expand all', action: () => notesStore.expandAll() },
         { label: 'Collapse all', action: () => notesStore.collapseAll() },
       ],
     };
@@ -596,11 +619,14 @@
   const openNoteMenu = (event: MouseEvent, noteId: number) => {
     const note = $notes.find((n) => n.id === noteId);
     const locked = note?.isLocked ?? false;
+    const hasChildren = $notes.some((n) => n.parentId === noteId);
+    const expanded = $expandedNotes.has(noteId);
     contextMenu = {
       x: event.clientX,
       y: event.clientY,
       items: [
         { label: 'Open', action: () => void openNote(noteId, true) },
+        ...(hasChildren ? [{ label: expanded ? 'Collapse' : 'Expand', action: () => notesStore.toggleExpand(noteId) }] : []),
         { label: 'New subnote', action: () => void createNoteIn(noteId) },
         { label: 'Rename', disabled: locked, action: () => renamingKey.set(`note:${noteId}`) },
         { label: 'Duplicate', action: () => void duplicateNote(noteId) },
@@ -608,7 +634,6 @@
         { label: '', separator: true },
         { label: 'Copy', action: () => notesStore.copyNote(noteId) },
         { label: 'Cut', action: () => notesStore.cutNote(noteId) },
-        { label: 'Export to .txt…', action: () => void exportNoteToTxt(noteId) },
         { label: '', separator: true },
         { label: locked ? 'Unlock' : 'Lock', action: () => void notesStore.toggleLock(noteId) },
         { label: '', separator: true },
@@ -726,9 +751,9 @@
     void settingsService.saveVimMode(enabled);
   };
 
-  const setDateTimeNoteNames = (enabled: boolean) => {
-    dateTimeNoteNamesEnabled = enabled;
-    void settingsService.saveDateTimeNoteNames(enabled);
+  const setNoteNamingMode = (mode: NoteNamingMode) => {
+    noteNamingMode = mode;
+    void settingsService.saveNoteNamingMode(mode);
   };
 
   // Re-reads every enabled plugin from disk and re-activates it - clears
@@ -988,7 +1013,7 @@
       darkPaletteId = settings.darkPaletteId;
       dismissedUpdateVersion = settings.dismissedUpdateVersion;
       vimModeEnabled = settings.vimMode;
-      dateTimeNoteNamesEnabled = settings.dateTimeNoteNames;
+      noteNamingMode = settings.noteNamingMode;
       document.documentElement.dataset.theme = theme;
       applyActivePalette();
       enabledPluginIds = settings.enabledPlugins;
@@ -1093,9 +1118,9 @@
 </svelte:head>
 
 {#if $startupError}
-  <div class="startup-error-shell">
-    <ResizeHandles />
-    <TitleBar />
+  <div class="startup-error-shell" class:squared={windowSquared} on:contextmenu|preventDefault>
+    <ResizeHandles squared={windowSquared} />
+    <TitleBar bind:squared={windowSquared} />
     <div class="startup-error-body">
       <h2>FlashPad can't reach your database</h2>
       <p>{$startupError}</p>
@@ -1106,9 +1131,9 @@
     </div>
   </div>
 {:else}
-<div class="app-shell">
-  <ResizeHandles />
-  <TitleBar />
+<div class="app-shell" class:squared={windowSquared} on:contextmenu|preventDefault>
+  <ResizeHandles squared={windowSquared} />
+  <TitleBar bind:squared={windowSquared} />
   <ActionToolbar
     {isMarkdownActive}
     onOpenNotesMenu={openNotesMenu}
@@ -1263,8 +1288,8 @@
     onDarkPaletteChange={setDarkPalette}
     vimMode={vimModeEnabled}
     onVimModeChange={setVimMode}
-    dateTimeNoteNames={dateTimeNoteNamesEnabled}
-    onDateTimeNoteNamesChange={setDateTimeNoteNames}
+    {noteNamingMode}
+    onNoteNamingModeChange={setNoteNamingMode}
     {enabledPluginIds}
     onSetPluginEnabled={setPluginEnabled}
     onReloadPlugins={reloadPlugins}
@@ -1373,35 +1398,38 @@
     user-select: none;
   }
 
-  :global(html) {
-    /* Shared by .app-shell and every overlay/modal's backdrop, so the
-       transparent window margin that makes the drop shadow visible against
-       the desktop never gets painted over by a full-bleed backdrop. */
-    --window-shadow-margin: 1px;
-  }
-
   .app-shell {
     position: fixed;
-    inset: var(--window-shadow-margin);
+    inset: var(--window-shadow-margin, 0);
     display: flex;
     flex-direction: column;
     background: var(--bg);
     color: var(--text);
     border-radius: 0.6rem;
     overflow: hidden;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4), 0 2px 16px rgba(0, 0, 0, 0.35);
+  }
+
+  .app-shell.squared {
+    border-radius: 0;
+    box-shadow: none;
   }
 
   .startup-error-shell {
     position: fixed;
-    inset: var(--window-shadow-margin);
+    inset: var(--window-shadow-margin, 0);
     display: flex;
     flex-direction: column;
     background: var(--bg);
     color: var(--text);
     border-radius: 0.6rem;
     overflow: hidden;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4), 0 2px 16px rgba(0, 0, 0, 0.35);
+  }
+
+  .startup-error-shell.squared {
+    border-radius: 0;
+    box-shadow: none;
   }
 
   .startup-error-body {

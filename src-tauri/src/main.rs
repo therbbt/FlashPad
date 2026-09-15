@@ -113,7 +113,15 @@ fn hide_main_window(app: &tauri::AppHandle) {
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
+        // A plain set_focus() from a global-shortcut handler is routinely
+        // refused by focus-stealing prevention when another app currently
+        // holds focus - the window shows but stays behind it. Briefly
+        // forcing always-on-top makes the window manager actually raise
+        // and focus it, the same trick other hotkey-toggled quick-launcher
+        // apps use to get around this.
+        let _ = window.set_always_on_top(true);
         let _ = window.set_focus();
+        let _ = window.set_always_on_top(false);
         WINDOW_SHOWN.store(true, Ordering::SeqCst);
     }
 }

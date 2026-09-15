@@ -8,6 +8,7 @@
   import { DatabaseService, type AppState } from '../services/databaseService';
   import { BackupService } from '../services/backupService';
   import { palettesForMode, type Palette } from '../theme/palettes';
+  import type { NoteNamingMode } from '../services/settingsService';
   import DatabaseManagerSection from './DatabaseManagerSection.svelte';
   import PluginsSection from './PluginsSection.svelte';
   import { pluginSettingsPanels, type SettingsPanelContribution } from '../plugins/pluginApi';
@@ -20,8 +21,8 @@
   export let onDarkPaletteChange: (id: string) => void;
   export let vimMode: boolean;
   export let onVimModeChange: (enabled: boolean) => void;
-  export let dateTimeNoteNames: boolean;
-  export let onDateTimeNoteNamesChange: (enabled: boolean) => void;
+  export let noteNamingMode: NoteNamingMode;
+  export let onNoteNamingModeChange: (mode: NoteNamingMode) => void;
   export let enabledPluginIds: string[];
   export let onSetPluginEnabled: (id: string, enabled: boolean) => Promise<void>;
   export let onReloadPlugins: () => Promise<void>;
@@ -377,7 +378,7 @@
 <svelte:window on:keydown={handleKeydown} on:mousedown={handleDropdownOutsideClick} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="overlay" on:mousedown={handleOutsideClick}>
+<div class="overlay" on:mousedown={handleOutsideClick} on:contextmenu|preventDefault>
   <div class="panel" bind:this={panelEl} role="dialog" aria-modal="true" aria-label="Settings">
     <header>
       <h2>Settings</h2>
@@ -531,10 +532,20 @@
               <span>Name new notes with date and time</span>
               <input
                 type="checkbox"
-                checked={dateTimeNoteNames}
-                on:change={(e) => onDateTimeNoteNamesChange(e.currentTarget.checked)}
+                checked={noteNamingMode !== 'untitled'}
+                on:change={(e) => onNoteNamingModeChange(e.currentTarget.checked ? (noteNamingMode === 'date' ? 'date' : 'dateTime') : 'untitled')}
               />
             </label>
+            {#if noteNamingMode !== 'untitled'}
+              <label class="row">
+                <span>Date only (no time)</span>
+                <input
+                  type="checkbox"
+                  checked={noteNamingMode === 'date'}
+                  on:change={(e) => onNoteNamingModeChange(e.currentTarget.checked ? 'date' : 'dateTime')}
+                />
+              </label>
+            {/if}
             <p class="hint">
               New notes are named with when they were created instead of "Untitled" - that name sticks even once you
               start typing. Turn this off to keep new notes as "Untitled" until you rename them, which does get

@@ -199,6 +199,14 @@ export function collapseAll(): void {
   expandedNotes.set(new Set());
 }
 
+export function expandAll(): void {
+  const parentIds = new Set<number>();
+  for (const note of get(notes)) {
+    if (note.parentId != null) parentIds.add(note.parentId);
+  }
+  expandedNotes.set(parentIds);
+}
+
 // ---------- creation ----------
 
 export async function createNoteIn(parentId: number | null, defaultTitle = 'Untitled'): Promise<NoteRecord> {
