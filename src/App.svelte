@@ -87,7 +87,15 @@
   let shortcutsOpen = false;
   // True while the window is maximized, fullscreen, or WM-snapped to a
   // screen half - see TitleBar.svelte's updateSquared for the detection.
-  let windowSquared = false;
+  let titleBarSquared = false;
+  // Windows only, set once at startup (see platform_name in main.rs).
+  // WebView2's transparent-window compositing doesn't blend cleanly with
+  // DWM there - instead of a soft shadow it shows a solid-looking gap with
+  // a hard edge, so tauri.windows.conf.json turns transparency off for
+  // that platform and this keeps the frontend's shell flush with the
+  // (now opaque) window to match, the same as a squared/maximized window.
+  let isWindows = false;
+  $: windowSquared = titleBarSquared || isWindows;
   // The shell's shadow margin is a CSS custom property (inherited by every
   // overlay/dialog's own `inset`, not just .app-shell - see app.css) rather
   // than a class-scoped value, since dialogs render as App.svelte siblings
@@ -1002,6 +1010,12 @@
   };
 
   onMount(async () => {
+    // Fired off now rather than awaited here so it resolves in parallel
+    // with everything else below - only actually read right before the
+    // window is revealed (see the frontend_ready call in the `finally`
+    // below), so there's no risk of a visible flash of the wrong corner
+    // style regardless of how long it takes.
+    const platformPromise = invoke<string>('platform_name').catch(() => 'unknown');
     try {
       // Loaded and applied ahead of databaseService.init() below,
       // deliberately in its own try/catch: the visible theme shouldn't
@@ -1087,6 +1101,7 @@
       console.error('FlashPad failed to initialize', err);
       status.set(err instanceof Error ? err.message : 'Startup error');
     } finally {
+      isWindows = (await platformPromise) === 'windows';
       // Window starts invisible (tauri.conf.json) specifically so nothing
       // shows before this point - the double rAF waits for the browser to
       // have actually painted the just-loaded content (size/theme/notes),
@@ -1120,7 +1135,7 @@
 {#if $startupError}
   <div class="startup-error-shell" class:squared={windowSquared} on:contextmenu|preventDefault>
     <ResizeHandles squared={windowSquared} />
-    <TitleBar bind:squared={windowSquared} />
+    <TitleBar bind:squared={titleBarSquared} />
     <div class="startup-error-body">
       <h2>FlashPad can't reach your database</h2>
       <p>{$startupError}</p>
@@ -1133,7 +1148,7 @@
 {:else}
 <div class="app-shell" class:squared={windowSquared} on:contextmenu|preventDefault>
   <ResizeHandles squared={windowSquared} />
-  <TitleBar bind:squared={windowSquared} />
+  <TitleBar bind:squared={titleBarSquared} />
   <ActionToolbar
     {isMarkdownActive}
     onOpenNotesMenu={openNotesMenu}

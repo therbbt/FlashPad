@@ -131,6 +131,17 @@ fn hide_window(app: AppHandle) {
     hide_main_window(&app);
 }
 
+/// "windows" / "linux" / "macos" - lets the frontend tell platforms apart
+/// without a whole OS-detection plugin. Currently only used to skip the
+/// floating rounded-corner/shadow treatment on Windows, where WebView2's
+/// transparent-window compositing doesn't blend cleanly with DWM and shows
+/// a broken-looking solid gap instead of a soft shadow (see
+/// tauri.windows.conf.json, which turns window transparency off to match).
+#[command]
+fn platform_name() -> &'static str {
+    std::env::consts::OS
+}
+
 /// Called by the frontend once its initial render is actually ready to be
 /// seen (data loaded, note selected/created, first paint done) - the window
 /// is created invisible (`visible: false` in tauri.conf.json) specifically
@@ -237,6 +248,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             hide_window,
             frontend_ready,
+            platform_name,
             get_hotkey,
             set_hotkey,
             images::read_dropped_image,

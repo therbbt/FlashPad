@@ -5,10 +5,10 @@
       {
         "label": "main",
         "title": "FlashPad",
-        "width": 760,
-        "height": 580,
+        "width": 792,
+        "height": 612,
         "resizable": true,
-        "transparent": true,
+        "transparent": false,
         "decorations": false,
         "visible": false,
         "focus": true,
