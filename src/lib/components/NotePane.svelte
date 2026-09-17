@@ -379,6 +379,32 @@
     </div>
     <div class="header-meta">
       {#if noteId != null}
+        <button
+          class="mode-icon"
+          class:active={isMarkdownActive}
+          on:click={toggleMarkdown}
+          disabled={isLockedActive}
+          aria-pressed={isMarkdownActive}
+          aria-label="Markdown"
+          title="Markdown (Alt+M)"
+        >
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 4h5M2 8h5M2 12h3" />
+            <path d="M10.5 3.5v9M10.5 3.5l2 2.5 2-2.5M14.5 8.5l-2 2.5-2-2.5" />
+          </svg>
+        </button>
+        <button
+          class="mode-icon editor"
+          class:active={isEditorModeActive}
+          on:click={toggleEditorMode}
+          aria-pressed={isEditorModeActive}
+          aria-label="Editor mode"
+          title="Editor mode (Alt+E)"
+        >
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5.5 3.5 2 8l3.5 4.5M10.5 3.5 14 8l-3.5 4.5" />
+          </svg>
+        </button>
         <NoteInfoPopover
           createdAt={currentNoteRecord?.createdAt ?? null}
           updatedAt={currentNoteRecord?.updatedAt ?? null}
@@ -542,5 +568,35 @@
   .lock-indicator {
     flex-shrink: 0;
     color: var(--muted);
+  }
+
+  .mode-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    opacity: 0.6;
+    cursor: pointer;
+  }
+
+  .mode-icon:hover:not(:disabled) {
+    opacity: 1;
+  }
+
+  .mode-icon.active {
+    color: var(--md-color);
+    opacity: 1;
+  }
+
+  .mode-icon.editor.active {
+    color: var(--accent);
+  }
+
+  .mode-icon:disabled {
+    opacity: 0.25;
+    cursor: default;
   }
 </style>

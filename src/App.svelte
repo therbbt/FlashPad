@@ -212,7 +212,18 @@
   $: visibleFlat = isSearching
     ? searchResults.map((n) => ({
         key: searchResultKey(n),
-        item: { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown, isLocked: n.isLocked, createdAt: n.createdAt, sortOrder: n.sortOrder, databaseId: n.databaseId, databaseName: n.databaseName } as TreeItem,
+        item: {
+          id: n.id,
+          title: n.title,
+          children: [],
+          isMarkdown: n.isMarkdown,
+          isEditorMode: n.isEditorMode,
+          isLocked: n.isLocked,
+          createdAt: n.createdAt,
+          sortOrder: n.sortOrder,
+          databaseId: n.databaseId,
+          databaseName: n.databaseName,
+        } as TreeItem,
       }))
     : flattenVisible($tree, $expandedNotes);
   $: if (visibleFlat.length && !visibleFlat.some((v) => v.key === $focusedKey)) {
@@ -1175,7 +1186,22 @@
     >
       {#if isSearching}
         {#each searchResults as note (searchResultKey(note))}
-          <TreeNode item={{ id: note.id, title: note.title, children: [], isMarkdown: note.isMarkdown, isLocked: note.isLocked, createdAt: note.createdAt, sortOrder: note.sortOrder, databaseId: note.databaseId, databaseName: note.databaseName }} depth={0} {...treeNodeProps} />
+          <TreeNode
+            item={{
+              id: note.id,
+              title: note.title,
+              children: [],
+              isMarkdown: note.isMarkdown,
+              isEditorMode: note.isEditorMode,
+              isLocked: note.isLocked,
+              createdAt: note.createdAt,
+              sortOrder: note.sortOrder,
+              databaseId: note.databaseId,
+              databaseName: note.databaseName,
+            }}
+            depth={0}
+            {...treeNodeProps}
+          />
         {/each}
         {#if !searchResults.length}
           <p class="empty-hint">No matches</p>
@@ -1274,11 +1300,8 @@
       {isSearching}
       searchResultsCount={searchResults.length}
       {searchMatchIndex}
-      {isMarkdownActive}
-      {isLockedActive}
       onSearchKeydown={handleTreeKeydown}
       onGoToSearchMatch={goToSearchMatch}
-      onToggleMarkdown={() => activePaneRef()?.toggleMarkdown()}
     />
   </div>
   </div>

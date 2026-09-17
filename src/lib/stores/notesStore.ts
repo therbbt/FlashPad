@@ -91,7 +91,18 @@ export const clipboard = writable<{ id: number; mode: 'copy' | 'cut' } | null>(n
 
 export const buildTree = (noteList: NoteRecord[]): TreeItem[] => {
   const nodeById = new Map<number, TreeItem>();
-  noteList.forEach((n) => nodeById.set(n.id, { id: n.id, title: n.title, children: [], isMarkdown: n.isMarkdown, isLocked: n.isLocked, createdAt: n.createdAt, sortOrder: n.sortOrder }));
+  noteList.forEach((n) =>
+    nodeById.set(n.id, {
+      id: n.id,
+      title: n.title,
+      children: [],
+      isMarkdown: n.isMarkdown,
+      isEditorMode: n.isEditorMode,
+      isLocked: n.isLocked,
+      createdAt: n.createdAt,
+      sortOrder: n.sortOrder,
+    }),
+  );
 
   const roots: TreeItem[] = [];
   noteList.forEach((n) => {

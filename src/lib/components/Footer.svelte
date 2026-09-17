@@ -1,11 +1,8 @@
 <script lang="ts">
   // Search-scope toggle and status text talk to the database/status stores
-  // directly (they're simple, single-purpose, already-global state) - only
-  // the values that mix local editor-mirror state with notes/database data
-  // (computed in App.svelte, since the sidebar tree needs them too) come in
-  // as props.
+  // directly - they're simple, single-purpose, already-global state, so
+  // there's no need to thread them through as props.
   import { hasSearchableOtherSources, searchAllDatabases, toggleSearchAllDatabases } from '../stores/databaseStore';
-  import { selectedId } from '../stores/notesStore';
   import { status } from '../stores/statusStore';
   import { vimModeIndicator } from '../stores/vimModeIndicator';
 
@@ -13,11 +10,8 @@
   export let isSearching: boolean;
   export let searchResultsCount: number;
   export let searchMatchIndex: number;
-  export let isMarkdownActive: boolean;
-  export let isLockedActive: boolean;
   export let onSearchKeydown: (event: KeyboardEvent) => void;
   export let onGoToSearchMatch: (direction: 1 | -1) => void;
-  export let onToggleMarkdown: () => void;
 </script>
 
 <footer class="footer" on:contextmenu|preventDefault>
@@ -71,15 +65,6 @@
       </button>
     {/if}
   </div>
-  <button
-    class="md-toggle"
-    class:active={isMarkdownActive}
-    on:click={onToggleMarkdown}
-    disabled={$selectedId == null || isLockedActive}
-    aria-pressed={isMarkdownActive}
-  >
-    Markdown
-  </button>
   <div class="footer-right">
     {#if $vimModeIndicator}
       <span class="vim-mode-badge">{$vimModeIndicator}</span>
@@ -89,32 +74,6 @@
 </footer>
 
 <style>
-  .md-toggle {
-    flex-shrink: 0;
-    border: 1px solid var(--border);
-    border-radius: 0.4rem;
-    background: var(--panel-2);
-    color: var(--muted);
-    font-size: 0.72rem;
-    padding: 0.3rem 0.55rem;
-    cursor: pointer;
-  }
-
-  .md-toggle:hover:not(:disabled) {
-    color: var(--text);
-  }
-
-  .md-toggle.active,
-  .md-toggle.active:hover {
-    background: var(--border);
-    color: var(--md-color);
-  }
-
-  .md-toggle:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-
   .footer {
     display: flex;
     align-items: center;

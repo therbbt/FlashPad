@@ -24,6 +24,7 @@
   import { sql } from '@codemirror/lang-sql';
   import { codeEditorTheme } from '../theme/codeEditorTheme';
   import { NETWORK_CONFIG_LANGUAGE_SUPPORT } from '../theme/networkConfigLanguage';
+  import { LOG_LANGUAGE_SUPPORT } from '../theme/logLanguage';
   import { MARKDOWN_CODE_LANGUAGES, INLINE_CODE_SHELL_EXTENSION } from '../theme/markdownCodeLanguages';
   import { resolveEffectiveLanguage, type LanguageId } from '../utils/languageDetect';
   import { formatText } from '../utils/formatCode';
@@ -78,6 +79,7 @@
     python,
     sql,
     ...NETWORK_CONFIG_LANGUAGE_SUPPORT,
+    ...LOG_LANGUAGE_SUPPORT,
   };
 
   // 'shell' and 'plain' (and anything unrecognized) get no LanguageSupport

@@ -4,6 +4,7 @@
     title: string;
     children: TreeItem[];
     isMarkdown: boolean;
+    isEditorMode: boolean;
     isLocked: boolean;
     createdAt: string;
     sortOrder: number;
@@ -153,6 +154,16 @@
       />
       {#if item.isMarkdown}
         <text x="7.9" y="12.2" text-anchor="middle" font-size="5.2" font-weight="800" fill="#fff" font-family="inherit">MD</text>
+      {/if}
+    </svg>
+  {:else if item.isEditorMode}
+    <svg class="icon editor-icon" width="16" height="16" viewBox="0 0 16 16">
+      <path
+        fill="currentColor"
+        d="M4 1.5h5.17a1 1 0 0 1 .7.3l2.83 2.83a1 1 0 0 1 .3.7V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.5a1 1 0 0 1 1-1Z"
+      />
+      {#if item.isMarkdown}
+        <text x="7.7" y="12.4" text-anchor="middle" font-size="5.6" font-weight="800" fill="#fff" font-family="inherit">MD</text>
       {/if}
     </svg>
   {:else if item.isMarkdown}
@@ -312,6 +323,10 @@
 
   .md-icon {
     color: var(--md-color);
+  }
+
+  .editor-icon {
+    color: var(--accent);
   }
 
   .label {
