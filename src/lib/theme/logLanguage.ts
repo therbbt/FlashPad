@@ -1,12 +1,14 @@
 import { StreamLanguage, LanguageSupport, type StreamParser } from '@codemirror/language';
 import type { LanguageId } from '../utils/languageDetect';
 
-// Hand-rolled CodeMirror "simple mode" for web server logs (nginx/Apache
-// access + nginx error log lines) - same StreamLanguage approach as
-// networkConfigLanguage.ts, for the same reason: there's no real grammar to
-// build a Lezer parser from, just a handful of visually-useful token shapes
-// (IPs, hostnames, bracketed timestamps/severity, HTTP methods) to pick out
-// of otherwise-unstructured text.
+// Hand-rolled CodeMirror "simple mode" for web server / app logs (nginx and
+// Apache access/error logs, plus Python's standard `logging` module output -
+// uvicorn, FastAPI, Flask, Django, and any other Python app that logs
+// through it all share the same "LEVEL:    message" line shape) - same
+// StreamLanguage approach as networkConfigLanguage.ts, for the same reason:
+// there's no real grammar to build a Lezer parser from, just a handful of
+// visually-useful token shapes (IPs, hostnames, timestamps/severity, HTTP
+// methods and status codes) to pick out of otherwise-unstructured text.
 //
 // Deliberately doesn't try to atomically parse quoted strings (the request
 // line, user-agent, referrer) the way networkConfigLanguage.ts does for
@@ -31,8 +33,12 @@ const KNOWN_TLDS = new Set([
 
 const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS', 'PATCH', 'CONNECT', 'TRACE']);
 
-const ERROR_LEVELS = new Set(['error', 'crit', 'alert', 'emerg', 'fatal']);
-const LOW_PRIORITY_LEVELS = new Set(['info', 'notice', 'debug']);
+// Covers both nginx's short level names (crit, emerg, warn) and Python
+// logging's full ones (critical, warning) - checked as lowercased strings
+// either way, so both vocabularies can share one set each.
+const ERROR_LEVELS = new Set(['error', 'crit', 'critical', 'alert', 'emerg', 'fatal']);
+const WARN_LEVELS = new Set(['warn', 'warning']);
+const LOW_PRIORITY_LEVELS = new Set(['info', 'notice', 'debug', 'trace']);
 
 // Colors an HTTP status code by class - 1xx/2xx (success) green, 3xx
 // (redirect - not actually an error, but not a plain success either) amber,
@@ -107,7 +113,7 @@ const parser: StreamParser<LogState> = {
         stream.pos = closeIndex + 1;
         const lower = inner.toLowerCase();
         if (ERROR_LEVELS.has(lower)) return 'invalid';
-        if (lower === 'warn' || lower === 'warning') return 'keyword';
+        if (WARN_LEVELS.has(lower)) return 'keyword';
         if (LOW_PRIORITY_LEVELS.has(lower)) return 'meta';
         // Apache/nginx access-log timestamp shape ("09/Sep/2026:11:36:33
         // +0000") - checked as its own explicit pattern rather than a loose
@@ -135,6 +141,16 @@ const parser: StreamParser<LogState> = {
       const lowerWord = word.toLowerCase();
       if (lowerWord === 'up') return 'string';
       if (lowerWord === 'down') return 'invalid';
+
+      // Python `logging`-style bare level prefix ("INFO:", "WARNING:",
+      // "ERROR:", ...) - only counted when immediately followed by ':',
+      // so an incidental word like "error" inside a message body doesn't
+      // get colored too.
+      if (stream.peek() === ':') {
+        if (ERROR_LEVELS.has(lowerWord)) return 'invalid';
+        if (WARN_LEVELS.has(lowerWord)) return 'keyword';
+        if (LOW_PRIORITY_LEVELS.has(lowerWord)) return 'meta';
+      }
 
       // A dotted quad is only trusted as an IP when it isn't immediately
       // after a single '/' (a path segment, or - the far more common case

@@ -72,15 +72,21 @@ export function detectLanguage(content: string): LanguageId {
 
   if (/^\s*(select|insert\s+into|update\s|delete\s+from|create\s+table)\b/im.test(trimmed)) return 'sql';
 
-  // Web server logs - nginx/Apache combined access log ("<ip> - - [<date>]
-  // \"<METHOD> ...\" <status> ...") and nginx error log ("<yyyy>/<mm>/<dd>
-  // <hh>:<mm>:<ss> [<level>] ..."). Checked ahead of the network-device
-  // checks below since a log line never starts with those vendors' command
-  // verbs, but log detection itself is deliberately narrow (anchored on the
-  // exact punctuation nginx/Apache emit) so it can't misfire on arbitrary
+  // Web server / app logs - nginx/Apache combined access log ("<ip> - - [<date>]
+  // \"<METHOD> ...\" <status> ..."), nginx error log ("<yyyy>/<mm>/<dd>
+  // <hh>:<mm>:<ss> [<level>] ..."), and Python's `logging` module output
+  // ("LEVEL:    message..."). Checked ahead of the network-device checks
+  // below since a log line never starts with those vendors' command verbs,
+  // but log detection itself is deliberately narrow (anchored on the exact
+  // punctuation/shape each format emits) so it can't misfire on arbitrary
   // text that merely contains an IP or a date somewhere.
   if (/^\d{1,3}(?:\.\d{1,3}){3} \S+ \S+ \[\d{2}\/\w{3}\/\d{4}/m.test(trimmed)) return 'log';
   if (/^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2} \[(?:debug|info|notice|warn|error|crit|alert|emerg)\]/m.test(trimmed)) return 'log';
+  // Python's standard `logging` module output ("INFO:     message...") -
+  // shared by uvicorn/FastAPI, Flask, Django, and any other Python app that
+  // logs through it, so this is keyed on the level-prefix shape itself
+  // rather than any one framework's wording.
+  if (/^(?:DEBUG|INFO|NOTICE|WARNING|ERROR|CRITICAL):\s/m.test(trimmed)) return 'log';
 
   // Network device configs - each check keys off a command/phrase that's
   // near-unique to that vendor's CLI, based on real running-config output

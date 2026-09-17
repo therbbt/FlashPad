@@ -1,6 +1,6 @@
 [package]
 name = "flashpad"
-version = "0.9.7"
+version = "0.9.8"
 edition = "2021"
 authors = ["therbbt"]
 description = "Global-hotkey quick-notes desktop app"
