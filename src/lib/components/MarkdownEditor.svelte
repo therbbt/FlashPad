@@ -12,6 +12,7 @@
   import TaskList from '@tiptap/extension-task-list';
   import TaskItem from '@tiptap/extension-task-item';
   import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
+  import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
   import { Markdown } from 'tiptap-markdown';
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { isAllowedLinkUrl } from '../utils/links';
@@ -832,6 +833,20 @@
         }),
         WikiLink,
         Placeholder.configure({ placeholder }),
+        // GFM pipe tables (`| a | b |`) - tiptap-markdown already ships a
+        // markdown parse/serialize spec keyed to a node named 'table' (see
+        // node_modules/tiptap-markdown/src/extensions/nodes/table.js), so
+        // just adding the standard table node set here is enough; no extra
+        // wiring needed on the Markdown extension below.
+        Table.configure({
+          // Wraps the rendered <table> in a scrollable <div> so a table
+          // wider than the note pane scrolls horizontally instead of
+          // overflowing/squashing the rest of the layout.
+          renderWrapper: true,
+        }),
+        TableRow,
+        TableHeader,
+        TableCell,
         TaskList,
         TaskItem.configure({
           nested: true,
@@ -1106,6 +1121,36 @@
   .markdown-editor :global(.tiptap ol) {
     padding-left: 1.4em;
     margin: 0.3em 0;
+  }
+
+  .markdown-editor :global(.tiptap .tableWrapper) {
+    overflow-x: auto;
+    margin: 0.6em 0;
+  }
+
+  .markdown-editor :global(.tiptap table) {
+    border-collapse: collapse;
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  .markdown-editor :global(.tiptap th),
+  .markdown-editor :global(.tiptap td) {
+    border: none;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding: 0.4em 0.7em;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .markdown-editor :global(.tiptap th) {
+    font-weight: 600;
+  }
+
+  .markdown-editor :global(.tiptap td > p),
+  .markdown-editor :global(.tiptap th > p) {
+    margin: 0;
   }
 
   .markdown-editor :global(.tiptap a) {
