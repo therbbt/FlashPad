@@ -11,6 +11,10 @@
   export let squared = false;
 
   let isMaximized = false;
+  // Under a tiling compositor (Hyprland) windows are closed, maximized and
+  // moved with keybindings, so the whole title bar is left out. Still
+  // mounted there, since `squared` above is computed here.
+  let showTitleBar = true;
   let unlistenResize: (() => void) | undefined;
   let unlistenMove: (() => void) | undefined;
 
@@ -24,7 +28,9 @@
     // this script is running in, which is exactly `win` here.
     const { currentMonitor } = await import('@tauri-apps/api/window');
     const [maximized, monitor, position, size] = await Promise.all([
-      win.isMaximized(),
+      // Via Rust rather than win.isMaximized(), which reports true for any
+      // window under Hyprland (see is_window_maximized in main.rs).
+      invoke<boolean>('is_window_maximized'),
       currentMonitor(),
       win.outerPosition(),
       win.outerSize(),
@@ -52,6 +58,7 @@
     if (!isTauriRuntime()) return;
     const { getCurrentWindow } = await import('@tauri-apps/api/window');
     const win = getCurrentWindow();
+    showTitleBar = !(await invoke<boolean>('uses_tiling_wm').catch(() => false));
     await updateSquared(win);
     unlistenResize = await win.onResized(() => void updateSquared(win));
     unlistenMove = await win.onMoved(() => void updateSquared(win));
@@ -61,12 +68,6 @@
     unlistenResize?.();
     unlistenMove?.();
   });
-
-  const withWindow = async (fn: (win: import('@tauri-apps/api/window').Window) => Promise<void>) => {
-    if (!isTauriRuntime()) return;
-    const { getCurrentWindow } = await import('@tauri-apps/api/window');
-    await fn(getCurrentWindow());
-  };
 
   // Minimize and close both just hide to the tray, matching the Escape key
   // and the global hotkey - this app has no taskbar-minimized state, it's
@@ -79,44 +80,52 @@
     void invoke('hide_window');
   };
   const minimize = hide;
-  const toggleMaximize = () => void withWindow((win) => win.toggleMaximize());
+  // Via Rust rather than win.toggleMaximize(): Hyprland ignores the app's own
+  // maximize request, so there it asks the compositor directly (see
+  // toggle_window_maximized in main.rs).
+  const toggleMaximize = () => {
+    if (!isTauriRuntime()) return;
+    void invoke('toggle_window_maximized');
+  };
   const close = hide;
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="title-bar" data-tauri-drag-region on:dblclick={toggleMaximize}>
-  <div class="brand">
-    <svg class="brand-icon" width="14" height="14" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="24" cy="25" r="15.53" />
-      <path d="M32.78 8.13 L18.6 26.35 H24.68 L16.58 41.88" />
-    </svg>
-    <span class="brand-name">FlashPad</span>
-  </div>
-  <div class="controls">
-    <button class="control" on:click={minimize} aria-label="Minimize">
-      <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
-        <path d="M3 8h10" />
+{#if showTitleBar}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="title-bar" data-tauri-drag-region on:dblclick={toggleMaximize}>
+    <div class="brand">
+      <svg class="brand-icon" width="14" height="14" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="24" cy="25" r="15.53" />
+        <path d="M32.78 8.13 L18.6 26.35 H24.68 L16.58 41.88" />
       </svg>
-    </button>
-    <button class="control" on:click={toggleMaximize} aria-label={isMaximized ? 'Restore' : 'Maximize'}>
-      {#if isMaximized}
-        <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round">
-          <path d="M5.5 3.5h6a1 1 0 0 1 1 1v6" />
-          <rect x="3.5" y="5.5" width="7" height="7" rx="0.8" />
+      <span class="brand-name">FlashPad</span>
+    </div>
+    <div class="controls">
+      <button class="control" on:click={minimize} aria-label="Minimize">
+        <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+          <path d="M3 8h10" />
         </svg>
-      {:else}
-        <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round">
-          <rect x="3.5" y="3.5" width="9" height="9" rx="0.8" />
+      </button>
+      <button class="control" on:click={toggleMaximize} aria-label={isMaximized ? 'Restore' : 'Maximize'}>
+        {#if isMaximized}
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round">
+            <path d="M5.5 3.5h6a1 1 0 0 1 1 1v6" />
+            <rect x="3.5" y="5.5" width="7" height="7" rx="0.8" />
+          </svg>
+        {:else}
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round">
+            <rect x="3.5" y="3.5" width="9" height="9" rx="0.8" />
+          </svg>
+        {/if}
+      </button>
+      <button class="control close" on:click={close} aria-label="Close">
+        <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+          <path d="M3 3l10 10M13 3l-10 10" />
         </svg>
-      {/if}
-    </button>
-    <button class="control close" on:click={close} aria-label="Close">
-      <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
-        <path d="M3 3l10 10M13 3l-10 10" />
-      </svg>
-    </button>
+      </button>
+    </div>
   </div>
-</div>
+{/if}
 
 <style>
   .title-bar {

@@ -174,6 +174,30 @@ them, copy `.env.example` to `.env` and follow
 npm run tauri build
 ```
 
+### Arch / Hyprland (e.g. Omarchy)
+
+There's no Arch package yet, so build and install for your user with:
+
+```bash
+sudo pacman -S --needed base-devel webkit2gtk-4.1 gtk3 librsvg libayatana-appindicator
+./scripts/install-linux-local.sh   # installs to ~/.local; re-run to update
+```
+
+The in-app updater can't update this install (on Linux it only replaces
+AppImages), so re-run the script to update.
+
+Hyprland doesn't let apps grab global hotkeys, so bind the hotkey in your
+Hyprland config to run `flashpad --toggle`, which shows or hides the running
+instance. Also make the window float. On Omarchy:
+
+```lua
+-- ~/.config/hypr/bindings.lua
+o.bind("ALT + S", "FlashPad", "~/.local/bin/flashpad --toggle")
+
+-- ~/.config/hypr/hyprland.lua
+o.window("^[Ff]lashpad$", { float = true, center = true })
+```
+
 ## Project Structure
 
 - `src/` — Svelte frontend

@@ -1119,7 +1119,18 @@
       // rather than revealing a still-empty frame that then jumps to the
       // real layout. Runs even on init failure so the app isn't stuck
       // invisible if something above threw.
-      requestAnimationFrame(() => requestAnimationFrame(() => void invoke('frontend_ready').catch(() => {})));
+      // The timeout is a fallback for compositors that never schedule
+      // frames for a window that has never been mapped (seen under
+      // Hyprland/XWayland) - rAF then never fires and the window would
+      // otherwise stay invisible forever.
+      let revealed = false;
+      const reveal = () => {
+        if (revealed) return;
+        revealed = true;
+        void invoke('frontend_ready').catch(() => {});
+      };
+      requestAnimationFrame(() => requestAnimationFrame(reveal));
+      setTimeout(reveal, 150);
     }
 
     void checkForAppUpdate();
