@@ -28,6 +28,13 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 /// the window hidden in the tray instead of popping up on every login.
 const HIDDEN_LAUNCH_FLAG: &str = "--hidden";
 
+/// `flashpad --toggle` shows/hides an already-running instance (or starts
+/// one if none is running). Needed on Wayland compositors like Hyprland,
+/// where an XWayland app's global key grab only receives keys while one of
+/// its own windows has focus - so the compositor's own keybinding runs this
+/// command instead. Any other repeat launch just shows the window.
+const TOGGLE_FLAG: &str = "--toggle";
+
 /// Fallback hotkey used until the user picks one in Settings.
 const DEFAULT_HOTKEY: &str = "Alt+S";
 
@@ -131,6 +138,65 @@ fn hide_window(app: AppHandle) {
     hide_main_window(&app);
 }
 
+fn on_hyprland() -> bool {
+    cfg!(target_os = "linux") && std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
+}
+
+/// Hyprland's "maximized" fullscreen state for our own window, read straight
+/// from the compositor - GTK's own is_maximized() reports true there even
+/// for a plain floating window, so it can't be trusted.
+fn hyprland_is_maximized() -> Option<bool> {
+    let output = std::process::Command::new("hyprctl").args(["clients", "-j"]).output().ok()?;
+    let clients: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).ok()?;
+    let pid = std::process::id() as u64;
+    let client = clients.iter().find(|c| c["pid"].as_u64() == Some(pid))?;
+    Some(client["fullscreen"].as_u64().unwrap_or(0) != 0)
+}
+
+/// Whether a keyboard-driven tiling compositor is managing our window, where
+/// a title bar with close/maximize/minimize buttons is out of place - the
+/// frontend hides it there.
+#[command]
+fn uses_tiling_wm() -> bool {
+    on_hyprland()
+}
+
+#[command]
+fn is_window_maximized(window: tauri::WebviewWindow) -> Result<bool, String> {
+    if on_hyprland() {
+        return Ok(hyprland_is_maximized().unwrap_or(false));
+    }
+    window.is_maximized().map_err(|e| e.to_string())
+}
+
+/// Hyprland ignores a client's own maximize request (Omarchy suppresses it
+/// for every window by default), so there the compositor is asked directly.
+/// Acts on the active window - always FlashPad, since this only runs from a
+/// click on its own title bar.
+#[command]
+fn toggle_window_maximized(window: tauri::WebviewWindow) -> Result<(), String> {
+    if on_hyprland() {
+        let lua = std::process::Command::new("hyprctl")
+            .args(["dispatch", r#"hl.dsp.window.fullscreen({ mode = "maximized" })"#])
+            .output()
+            .map_err(|e| e.to_string())?;
+        // Hyprland before its Lua config (0.55) only understands the old
+        // dispatcher syntax.
+        if String::from_utf8_lossy(&lua.stdout).trim() != "ok" {
+            std::process::Command::new("hyprctl")
+                .args(["dispatch", "fullscreen", "1"])
+                .output()
+                .map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    if window.is_maximized().map_err(|e| e.to_string())? {
+        window.unmaximize().map_err(|e| e.to_string())
+    } else {
+        window.maximize().map_err(|e| e.to_string())
+    }
+}
+
 /// "windows" / "linux" / "macos" - lets the frontend tell platforms apart
 /// without a whole OS-detection plugin. Currently only used to skip the
 /// floating rounded-corner/shadow treatment on Windows, where WebView2's
@@ -179,13 +245,28 @@ fn main() {
     // Unconditional: Wayland desktop sessions commonly export GDK_BACKEND
     // themselves (e.g. GDK_BACKEND=wayland), so an "only if unset" check
     // never actually overrides it.
+    // Hyprland is the exception: it never draws title bars, so there's
+    // nothing to work around, while XWayland there has real costs - Omarchy
+    // renders XWayland apps at GDK_SCALE=2 (oversized on fractional-scale
+    // displays), and its global key grab can't see keys pressed in Wayland
+    // windows anyway (see TOGGLE_FLAG). Stay native Wayland there.
     #[cfg(target_os = "linux")]
-    {
+    if !on_hyprland() {
         std::env::set_var("GDK_BACKEND", "x11");
         eprintln!("[flashpad] GDK_BACKEND forced to: {:?}", std::env::var("GDK_BACKEND"));
     }
 
     tauri::Builder::default()
+        // Must be registered first, so a repeat launch hands its args to the
+        // running instance and exits before touching anything else (it used
+        // to panic trying to register an already-taken hotkey).
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().any(|arg| arg == TOGGLE_FLAG) {
+                toggle_main_window(app);
+            } else {
+                show_main_window(app);
+            }
+        }))
         .plugin(
             // Excludes DECORATIONS (see above) and VISIBLE: visibility is
             // entirely our own responsibility now (`frontend_ready`/
@@ -247,6 +328,9 @@ fn main() {
         )
         .invoke_handler(tauri::generate_handler![
             hide_window,
+            uses_tiling_wm,
+            is_window_maximized,
+            toggle_window_maximized,
             frontend_ready,
             platform_name,
             get_hotkey,
@@ -306,10 +390,15 @@ fn main() {
 
             scheduler::spawn(app.handle().clone());
 
+            // Non-fatal: the hotkey can be taken by another app, and on
+            // Wayland compositors like Hyprland the XWayland grab never sees
+            // keys pressed in native Wayland windows anyway - there the
+            // compositor binds `flashpad --toggle` instead (see
+            // TOGGLE_FLAG). Either way the app should still start.
             let initial_hotkey = load_hotkey(&data_dir);
-            app.global_shortcut()
-                .register(initial_hotkey.as_str())
-                .expect("failed to register initial hotkey");
+            if let Err(err) = app.global_shortcut().register(initial_hotkey.as_str()) {
+                eprintln!("[flashpad] failed to register hotkey {initial_hotkey}: {err}");
+            }
             app.manage(HotkeyState(Mutex::new(initial_hotkey)));
 
             let open_item = MenuItem::with_id(app, "open", "Open FlashPad", true, None::<&str>)?;
